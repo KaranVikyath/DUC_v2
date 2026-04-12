@@ -1,0 +1,84 @@
+[
+  {
+    "step": "Step 0: Baseline",
+    "timestamp": "2026-04-12T17:27:08.226665",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 728,
+        "total_time_s": 164.2796984000015,
+        "avg_iter_ms": 225.65568873695875,
+        "std_iter_ms": 25.911991292683417,
+        "completion_acc": 100.0,
+        "cluster_acc": 99.8
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 555,
+        "total_time_s": 125.83121119998395,
+        "avg_iter_ms": 226.72005098854268,
+        "std_iter_ms": 16.66360990465689,
+        "completion_acc": 99.32307162049365,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 1020,
+        "total_time_s": 229.89936989999842,
+        "avg_iter_ms": 225.38844597977862,
+        "std_iter_ms": 12.584880542230895,
+        "completion_acc": 71.37557647492947,
+        "cluster_acc": 93.39999999999999
+      }
+    ]
+  },
+  {
+    "step": "Step 1: Batched PseudoCompletion",
+    "timestamp": "2026-04-12T17:28:38.257495",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 723,
+        "total_time_s": 19.97372200002428,
+        "avg_iter_ms": 27.62387842336028,
+        "std_iter_ms": 19.956654104292678,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 545,
+        "total_time_s": 14.589214799983893,
+        "avg_iter_ms": 26.766895412877542,
+        "std_iter_ms": 3.8536326564926857,
+        "completion_acc": 99.29576310802005,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 1382,
+        "total_time_s": 37.48427239997545,
+        "avg_iter_ms": 27.120421853357207,
+        "std_iter_ms": 4.001121164616928,
+        "completion_acc": 68.53771113868498,
+        "cluster_acc": 93.8
+      }
+    ]
+  }
+]
