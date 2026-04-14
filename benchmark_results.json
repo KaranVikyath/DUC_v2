@@ -80,5 +80,46 @@
         "cluster_acc": 93.8
       }
     ]
+  },
+  {
+    "step": "Step 2+3: svd_lowrank + fused loss",
+    "timestamp": "2026-04-13T20:18:36.061575",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 547,
+        "total_time_s": 20.546772300000157,
+        "avg_iter_ms": 37.559625594167464,
+        "std_iter_ms": 50.70450768938247,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 408,
+        "total_time_s": 15.963637099999687,
+        "avg_iter_ms": 39.123668137253226,
+        "std_iter_ms": 5.025395062399639,
+        "completion_acc": 95.8994813164707,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 368,
+        "total_time_s": 13.441818799999965,
+        "avg_iter_ms": 36.52409891306325,
+        "std_iter_ms": 3.746922229272513,
+        "completion_acc": 82.79446771155857,
+        "cluster_acc": 97.2
+      }
+    ]
   }
 ]

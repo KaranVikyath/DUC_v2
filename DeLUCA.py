@@ -65,12 +65,16 @@ class DeLUCA(nn.Module):
         PZ = PZ.view(Z.shape)
         decoded = self.decoder(PZ)
         
-        # Compute reconstruction loss
+        # Compute reconstruction loss — fused: single mask, reuse masked tensors
         x_omega, mask_tensor = convert_nan(x)
-        x_tilde_omega = Xc * mask_tensor
-        x_omega_hat = decoded * mask_tensor
-
-        reconstruction_loss= torch.norm((x_tilde_omega - x_omega), p='fro') + torch.norm((x_tilde_omega - x_omega_hat), p='fro') + torch.norm((x_omega_hat - x_omega), p='fro')
+        Xc_m = Xc * mask_tensor
+        dec_m = decoded * mask_tensor
+        d1 = Xc_m - x_omega
+        d2 = Xc_m - dec_m
+        d3 = dec_m - x_omega
+        reconstruction_loss = (torch.norm(d1, p='fro')
+                               + torch.norm(d2, p='fro')
+                               + torch.norm(d3, p='fro'))
         # reconstruction_loss= 0.5 * torch.norm((x_omega_hat - x_omega), p='fro')
         autoencoder_loss = 0.5 * torch.norm(Z - PZ, p='fro')
 
@@ -268,7 +272,7 @@ class SelfExpressiveModule(nn.Module):
     
 
 class CFSModule(nn.Module):
-    """Coefficient-Feature Self-expressive module using stable SVD."""
+    """Coefficient-Feature Self-expressive module using randomized SVD."""
     def __init__(self, rank):
         super().__init__()
         self.rank = rank
@@ -276,20 +280,10 @@ class CFSModule(nn.Module):
     def forward(self, Z):
         # Z: batch_size x features
         Zt = Z.t()  # features x batch_size
-        # stable SVD: try torch.linalg.svd, fallback to NumPy
-        try:
-            U, S, Vh = torch.linalg.svd(Zt, full_matrices=False)
-            V = Vh.transpose(-2, -1)
-        except RuntimeError:
-            import numpy as _np
-            Zt_cpu = Zt.detach().cpu().numpy()
-            U_np, S_np, Vt_np = _np.linalg.svd(Zt_cpu, full_matrices=False)
-            U = torch.from_numpy(U_np).to(Zt.device)
-            S = torch.from_numpy(S_np).to(Zt.device)
-            V = torch.from_numpy(Vt_np.T).to(Zt.device)
-        # select top-rank singular vectors
-        V_rank = V[:, :self.rank]
-        P = V_rank @ V_rank.t()
+        # Randomized SVD: O(mn*rank) vs O(mn*min(m,n)) for full SVD
+        U, S, V = torch.svd_lowrank(Zt, q=self.rank)
+        # V: (batch_size, rank) — already truncated
+        P = V @ V.t()
         self.Coef = P.t()
         PZ = self.Coef @ Z
         return PZ, self.Coef
