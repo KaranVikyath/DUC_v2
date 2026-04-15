@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import torch.optim as optim
@@ -7,6 +8,69 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from custom_funcs import convert_nan
 import torch.nn.init as init
+
+# --- CUDA extension for fused pseudo-completion (Step 4) ---
+_pseudo_cuda = None
+_pseudo_cuda_checked = False
+
+def _load_pseudo_cuda():
+    """Load the pre-built CUDA extension (built via cuda_kernels/setup.py)."""
+    global _pseudo_cuda, _pseudo_cuda_checked
+    if _pseudo_cuda_checked:
+        return _pseudo_cuda
+    _pseudo_cuda_checked = True
+    try:
+        import pseudo_completion_cuda
+        _pseudo_cuda = pseudo_completion_cuda
+    except ImportError:
+        _pseudo_cuda = None
+    return _pseudo_cuda
+
+
+class FusedPseudoCompletionFn(torch.autograd.Function):
+    """Autograd wrapper: CUDA forward + backward when available, PyTorch fallback."""
+
+    @staticmethod
+    def forward(ctx, x_clean, weight, bias, prelu_weight):
+        # x_clean: (batch_size, feature_size) — NaN already replaced with 0
+        cuda_ext = _load_pseudo_cuda()
+        out, pre_act = cuda_ext.forward(
+            x_clean.float().contiguous(),
+            weight.contiguous(),
+            bias.contiguous(),
+            prelu_weight.contiguous(),
+        )
+        ctx.save_for_backward(x_clean, weight, prelu_weight, pre_act)
+        ctx._has_cuda_bwd = hasattr(cuda_ext, 'backward')
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x_clean, weight, prelu_weight, pre_act = ctx.saved_tensors
+
+        # Use CUDA backward kernel when available
+        if ctx._has_cuda_bwd:
+            cuda_ext = _load_pseudo_cuda()
+            d_weight, d_bias, d_prelu = cuda_ext.backward(
+                grad_output.contiguous(),
+                x_clean.contiguous(),
+                prelu_weight.contiguous(),
+                pre_act.contiguous(),
+            )
+            return None, d_weight, d_bias, d_prelu
+
+        # PyTorch fallback backward
+        grad_t = grad_output.t()                           # (F, B)
+        prelu_w = prelu_weight.view(-1, 1)                 # (F, 1)
+        mask = (pre_act > 0).float()                       # (F, B)
+        dz = grad_t * (mask + prelu_w * (1.0 - mask))      # (F, B)
+
+        d_prelu = (grad_t * pre_act * (1.0 - mask)).sum(dim=1, keepdim=True)
+        d_bias = dz
+        x_col = x_clean.t()                                # (F, B)
+        d_weight = dz.unsqueeze(2) * x_col.unsqueeze(1)    # (F, B, B)
+
+        return None, d_weight, d_bias, d_prelu
 
 class DeLUCA(nn.Module):
     def __init__(self, input_shape, flat_layer_size, enc_layer_size, deco_layer_size,  
@@ -135,19 +199,21 @@ class PseudoCompletion(nn.Module):
     def forward(self, x):
         # x: (batch_size, *features) → (batch_size, feature_size)
         x = x.reshape(self.batch_size, -1).float()
-        # Replace NaN with 0
         x = torch.nan_to_num(x, nan=0.0)
-        # x.T: (feature_size, batch_size) → unsqueeze for bmm: (feature_size, batch_size, 1)
+
+        # Use fused CUDA kernel when available (Step 4)
+        if x.is_cuda and _load_pseudo_cuda() is not None:
+            out = FusedPseudoCompletionFn.apply(
+                x, self.weight, self.bias, self.prelu_weight)
+            return out.view(self.input_shape)
+
+        # Fallback: batched PyTorch ops (Step 1)
         x_t = x.t().unsqueeze(2)
-        # Batched matmul: (feature_size, batch_size, batch_size) @ (feature_size, batch_size, 1)
-        #                → (feature_size, batch_size, 1)
         out = torch.bmm(self.weight, x_t).squeeze(2)  # (feature_size, batch_size)
         out = out + self.bias
-        # PReLU per feature: weight shape (feature_size, 1) broadcasts over batch dim
         pos = torch.clamp(out, min=0)
         neg = self.prelu_weight * torch.clamp(out, max=0)
         out = pos + neg
-        # Transpose back: (batch_size, feature_size)
         return out.t().view(self.input_shape)
 class Encoder(nn.Module):
     def __init__(self, input_shape, enc_layer_size,kernel_size):
