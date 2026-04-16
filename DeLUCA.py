@@ -72,6 +72,35 @@ class FusedPseudoCompletionFn(torch.autograd.Function):
 
         return None, d_weight, d_bias, d_prelu
 
+class HybridPseudoCompletionFn(torch.autograd.Function):
+    """Hybrid: cuBLAS bmm for matmul + CUDA kernel for fused bias+PReLU+transpose."""
+
+    @staticmethod
+    def forward(ctx, x_clean, weight, bias, prelu_weight):
+        cuda_ext = _load_pseudo_cuda()
+        # cuBLAS batched matmul: (F, B, B) @ (F, B, 1) → (F, B)
+        x_t = x_clean.t().unsqueeze(2)                       # (F, B, 1)
+        bmm_out = torch.bmm(weight, x_t).squeeze(2)          # (F, B)
+        # Fused bias + PReLU + transpose via CUDA kernel
+        out, pre_act = cuda_ext.hybrid_forward(bmm_out, bias, prelu_weight)
+        ctx.save_for_backward(x_clean, weight, prelu_weight, pre_act)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        x_clean, weight, prelu_weight, pre_act = ctx.saved_tensors
+        cuda_ext = _load_pseudo_cuda()
+        # CUDA kernel: PReLU backward → dz (F,B), d_prelu (F,1)
+        dz, d_prelu = cuda_ext.hybrid_backward(
+            grad_output.contiguous(), prelu_weight, pre_act)
+        # dz serves as d_bias
+        d_bias = dz
+        # cuBLAS for d_weight: dz (F,B,1) * x_col (F,1,B) → (F,B,B)
+        x_col = x_clean.t()                                   # (F, B)
+        d_weight = dz.unsqueeze(2) * x_col.unsqueeze(1)       # (F, B, B)
+        return None, d_weight, d_bias, d_prelu
+
+
 class DeLUCA(nn.Module):
     def __init__(self, input_shape, flat_layer_size, enc_layer_size, deco_layer_size,  
                  kernel_size, output_padding, lr, K, rank, reg_const1=1.0, reg_const2=1.0,
@@ -201,9 +230,10 @@ class PseudoCompletion(nn.Module):
         x = x.reshape(self.batch_size, -1).float()
         x = torch.nan_to_num(x, nan=0.0)
 
-        # Use fused CUDA kernel when available (Step 4)
-        if x.is_cuda and _load_pseudo_cuda() is not None:
-            out = FusedPseudoCompletionFn.apply(
+        # Hybrid: cuBLAS bmm + CUDA fused bias/PReLU (Step 4b)
+        cuda_ext = _load_pseudo_cuda()
+        if x.is_cuda and cuda_ext is not None and hasattr(cuda_ext, 'hybrid_forward'):
+            out = HybridPseudoCompletionFn.apply(
                 x, self.weight, self.bias, self.prelu_weight)
             return out.view(self.input_shape)
 

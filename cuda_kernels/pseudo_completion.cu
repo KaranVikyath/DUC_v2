@@ -168,7 +168,171 @@ fused_pseudo_bwd(
 
 
 // ============================================================
-//  C++ wrapper — forward
+//  Hybrid forward kernel: fused bias + PReLU only
+// ============================================================
+//  Used AFTER torch.bmm (cuBLAS) computes the matmul.
+//  Input: bmm_out (F, B) = W @ x  (already computed by cuBLAS)
+//  Fuses: + bias → PReLU → transpose to (B, F) output
+//  Also saves pre_act (F, B) for backward.
+//
+//  Grid:  (F,)   Block: (min(B, 512),)   Smem: 0
+
+__global__ void __launch_bounds__(512)
+fused_bias_prelu_fwd(
+    const float* __restrict__ bmm_out,   // (F, B) — output of batched matmul
+    const float* __restrict__ bias,      // (F, B)
+    const float* __restrict__ prelu_w,   // (F,)
+    float* __restrict__ out,             // (B, F)
+    float* __restrict__ pre_act,         // (F, B)
+    int B, int F)
+{
+    const int f = blockIdx.x;
+    if (f >= F) return;
+
+    const float alpha = __ldg(&prelu_w[f]);
+    const size_t bb = (size_t)f * B;
+
+    for (int b = threadIdx.x; b < B; b += blockDim.x) {
+        float z = __ldg(&bmm_out[bb + b]) + __ldg(&bias[bb + b]);
+        pre_act[bb + b] = z;
+        out[b * F + f] = (z > 0.0f) ? z : alpha * z;
+    }
+}
+
+
+// ============================================================
+//  Hybrid backward kernel: PReLU backward + d_prelu reduction
+// ============================================================
+//  Computes dz (PReLU backward), d_bias, d_prelu.
+//  d_weight is handled by cuBLAS (outer product via bmm) in Python.
+//
+//  Grid:  (F,)   Block: (min(B, 512),)
+//  Smem:  num_warps floats (for d_prelu reduction)
+
+__global__ void __launch_bounds__(512)
+fused_bias_prelu_bwd(
+    const float* __restrict__ grad_out,  // (B, F)
+    const float* __restrict__ prelu_w,   // (F,)
+    const float* __restrict__ pre_act,   // (F, B)
+    float* __restrict__ dz_out,          // (F, B) — PReLU backward result
+    float* __restrict__ d_prelu,         // (F,)
+    int B, int F)
+{
+    const int f = blockIdx.x;
+    if (f >= F) return;
+
+    extern __shared__ float s_wp[];      // num_warps floats
+
+    const float alpha = __ldg(&prelu_w[f]);
+    const size_t bb = (size_t)f * B;
+    const int lane = threadIdx.x & 31;
+    const int warp_id = threadIdx.x >> 5;
+    const int n_warps = (blockDim.x + 31) >> 5;
+
+    float local_dp = 0.0f;
+    for (int b = threadIdx.x; b < B; b += blockDim.x) {
+        float go = __ldg(&grad_out[b * F + f]);
+        float z  = pre_act[bb + b];
+        float m  = (z > 0.0f) ? 1.0f : 0.0f;
+        float dz = go * (m + alpha * (1.0f - m));
+
+        dz_out[bb + b] = dz;    // d_bias = dz, also used for d_weight
+
+        if (z <= 0.0f)
+            local_dp += go * z;
+    }
+
+    // Warp-shuffle + cross-warp reduction for d_prelu
+    for (int off = 16; off > 0; off >>= 1)
+        local_dp += __shfl_down_sync(0xFFFFFFFF, local_dp, off);
+
+    if (lane == 0)
+        s_wp[warp_id] = local_dp;
+    __syncthreads();
+
+    if (warp_id == 0) {
+        float val = (lane < n_warps) ? s_wp[lane] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1)
+            val += __shfl_down_sync(0xFFFFFFFF, val, off);
+        if (lane == 0)
+            d_prelu[f] = val;
+    }
+}
+
+
+// ============================================================
+//  C++ wrapper — hybrid forward (cuBLAS bmm done in Python,
+//  this fuses bias + PReLU + transpose)
+// ============================================================
+
+std::vector<torch::Tensor> hybrid_bias_prelu_forward(
+    torch::Tensor bmm_out,    // (F, B) — result of torch.bmm
+    torch::Tensor bias,       // (F, B)
+    torch::Tensor prelu_w)    // (F, 1) or (F,)
+{
+    TORCH_CHECK(bmm_out.is_cuda(), "bmm_out must be CUDA");
+    TORCH_CHECK(bmm_out.dtype() == torch::kFloat32, "must be float32");
+
+    const int F = bmm_out.size(0);
+    const int B = bmm_out.size(1);
+
+    auto bm_c = bmm_out.contiguous();
+    auto b_c  = bias.contiguous();
+    auto p_c  = prelu_w.contiguous().view({F});
+
+    auto out     = torch::empty({B, F}, bmm_out.options());
+    auto pre_act = torch::empty({F, B}, bmm_out.options());
+
+    const int threads = std::min(B, 512);
+
+    fused_bias_prelu_fwd<<<F, threads>>>(
+        bm_c.data_ptr<float>(), b_c.data_ptr<float>(),
+        p_c.data_ptr<float>(),
+        out.data_ptr<float>(), pre_act.data_ptr<float>(),
+        B, F);
+
+    return {out, pre_act};
+}
+
+
+// ============================================================
+//  C++ wrapper — hybrid backward (PReLU bwd + d_prelu reduction)
+// ============================================================
+
+std::vector<torch::Tensor> hybrid_bias_prelu_backward(
+    torch::Tensor grad_out,   // (B, F)
+    torch::Tensor prelu_w,    // (F, 1) or (F,)
+    torch::Tensor pre_act)    // (F, B)
+{
+    TORCH_CHECK(grad_out.is_cuda(), "grad_out must be CUDA");
+
+    const int B = grad_out.size(0);
+    const int F = grad_out.size(1);
+
+    auto go_c = grad_out.contiguous();
+    auto p_c  = prelu_w.contiguous().view({F});
+    auto pa_c = pre_act.contiguous();
+
+    auto dz_out = torch::empty({F, B}, grad_out.options());
+    auto d_prelu = torch::empty({F}, grad_out.options());
+
+    const int threads = std::min(B, 512);
+    const int n_warps = (threads + 31) / 32;
+    const size_t smem = n_warps * sizeof(float);
+
+    fused_bias_prelu_bwd<<<F, threads, smem>>>(
+        go_c.data_ptr<float>(), p_c.data_ptr<float>(),
+        pa_c.data_ptr<float>(),
+        dz_out.data_ptr<float>(), d_prelu.data_ptr<float>(),
+        B, F);
+
+    // dz_out serves as both d_bias and input for d_weight computation
+    return {dz_out, d_prelu.unsqueeze(1)};
+}
+
+
+// ============================================================
+//  C++ wrapper — fully-fused forward (naive, for reference)
 // ============================================================
 
 std::vector<torch::Tensor> fused_pseudo_completion_forward(
@@ -255,4 +419,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Fused pseudo-completion forward  (CUDA)");
     m.def("backward", &fused_pseudo_completion_backward,
           "Fused pseudo-completion backward (CUDA)");
+    m.def("hybrid_forward",  &hybrid_bias_prelu_forward,
+          "Hybrid bias+PReLU forward (after cuBLAS bmm)");
+    m.def("hybrid_backward", &hybrid_bias_prelu_backward,
+          "Hybrid PReLU backward + d_prelu reduction");
 }

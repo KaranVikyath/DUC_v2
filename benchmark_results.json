@@ -14,34 +14,119 @@
       {
         "missing_pct": 0.0,
         "iterations": 728,
-        "total_time_s": 181.40791100000206,
-        "avg_iter_ms": 249.18351318675568,
-        "std_iter_ms": 42.83644677189439,
+        "total_time_s": 181.408,
+        "avg_iter_ms": 249.184,
+        "std_iter_ms": 42.836,
         "completion_acc": 100.0,
         "cluster_acc": 99.8
       },
       {
         "missing_pct": 0.3,
         "iterations": 555,
-        "total_time_s": 135.00105360000452,
-        "avg_iter_ms": 243.2422336935053,
-        "std_iter_ms": 16.487335766604513,
-        "completion_acc": 99.32307162049365,
+        "total_time_s": 135.001,
+        "avg_iter_ms": 243.242,
+        "std_iter_ms": 16.487,
+        "completion_acc": 99.323,
         "cluster_acc": 100.0
       },
       {
         "missing_pct": 0.7,
         "iterations": 1020,
-        "total_time_s": 264.5681614000059,
-        "avg_iter_ms": 259.3774671568812,
-        "std_iter_ms": 20.984718391318378,
-        "completion_acc": 71.37557647492947,
-        "cluster_acc": 93.39999999999999
+        "total_time_s": 264.568,
+        "avg_iter_ms": 259.377,
+        "std_iter_ms": 20.985,
+        "completion_acc": 71.376,
+        "cluster_acc": 93.4
       }
-    ]
+    ],
+    "notes": "Original DeLUCA.py \u00e2\u20ac\u201d Python for-loop over features, full SVD, separate loss terms"
   },
   {
-    "step": "Step 4: CUDA fused kernel",
+    "step": "Step 1: Batched PseudoCompletion",
+    "timestamp": "2026-04-12T17:28:38.257495",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 723,
+        "total_time_s": 19.974,
+        "avg_iter_ms": 27.624,
+        "std_iter_ms": 19.957,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 545,
+        "total_time_s": 14.589,
+        "avg_iter_ms": 26.767,
+        "std_iter_ms": 3.854,
+        "completion_acc": 99.296,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 1382,
+        "total_time_s": 37.484,
+        "avg_iter_ms": 27.12,
+        "std_iter_ms": 4.001,
+        "completion_acc": 68.538,
+        "cluster_acc": 93.8
+      }
+    ],
+    "notes": "Replaced Python for-loop with batched torch.bmm \u00e2\u20ac\u201d 9x speedup per iteration"
+  },
+  {
+    "step": "Step 2+3: svd_lowrank + fused loss",
+    "timestamp": "2026-04-13T20:18:36.061575",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 547,
+        "total_time_s": 20.547,
+        "avg_iter_ms": 37.56,
+        "std_iter_ms": 50.705,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 408,
+        "total_time_s": 15.964,
+        "avg_iter_ms": 39.124,
+        "std_iter_ms": 5.025,
+        "completion_acc": 95.899,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 368,
+        "total_time_s": 13.442,
+        "avg_iter_ms": 36.524,
+        "std_iter_ms": 3.747,
+        "completion_acc": 82.794,
+        "cluster_acc": 97.2
+      }
+    ],
+    "notes": "Randomized SVD (svd_lowrank) + fused loss computation \u00e2\u20ac\u201d fewer iterations at 70% missing, better accuracy"
+  },
+  {
+    "step": "Step 4: CUDA fused kernel (naive)",
     "timestamp": "2026-04-14T20:52:20.217612",
     "device": "cuda",
     "config": {
@@ -55,29 +140,72 @@
       {
         "missing_pct": 0.0,
         "iterations": 538,
-        "total_time_s": 26.836097500003234,
-        "avg_iter_ms": 49.87818624516586,
-        "std_iter_ms": 27.31299960020501,
+        "total_time_s": 26.836,
+        "avg_iter_ms": 49.878,
+        "std_iter_ms": 27.313,
         "completion_acc": 100.0,
         "cluster_acc": 100.0
       },
       {
         "missing_pct": 0.3,
         "iterations": 389,
-        "total_time_s": 19.236134099999617,
-        "avg_iter_ms": 49.44748586107834,
-        "std_iter_ms": 3.993008858355008,
-        "completion_acc": 95.92206714054716,
+        "total_time_s": 19.236,
+        "avg_iter_ms": 49.447,
+        "std_iter_ms": 3.993,
+        "completion_acc": 95.922,
         "cluster_acc": 100.0
       },
       {
         "missing_pct": 0.7,
         "iterations": 411,
-        "total_time_s": 20.246664899997995,
-        "avg_iter_ms": 49.258973722538315,
-        "std_iter_ms": 3.2255215700108053,
-        "completion_acc": 82.64290976141521,
+        "total_time_s": 20.247,
+        "avg_iter_ms": 49.259,
+        "std_iter_ms": 3.226,
+        "completion_acc": 82.643,
         "cluster_acc": 98.2
+      }
+    ],
+    "notes": "Custom CUDA kernel fusing matmul+bias+PReLU \u00e2\u20ac\u201d slower than cuBLAS bmm at this problem size (B=500, F=100). Demonstrates shared memory, kernel fusion, warp-shuffle concepts but naive dot product can't compete with cuBLAS tiling/tensor cores.",
+    "challenges": "CUDA 12.1 vs VS2026 compatibility required --allow-unsupported-compiler + _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH flags"
+  },
+  {
+    "step": "Step 4b: Hybrid (cuBLAS + fused bias/PReLU)",
+    "timestamp": "2026-04-14T22:27:07.594374",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 561,
+        "total_time_s": 21.23039460000291,
+        "avg_iter_ms": 37.84077647063257,
+        "std_iter_ms": 39.98396061612144,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 390,
+        "total_time_s": 14.21688020000147,
+        "avg_iter_ms": 36.45073205134861,
+        "std_iter_ms": 3.0154886934018648,
+        "completion_acc": 95.60166904899077,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 388,
+        "total_time_s": 13.801609099995403,
+        "avg_iter_ms": 35.56832036071879,
+        "std_iter_ms": 2.9693803129177465,
+        "completion_acc": 82.55458281119694,
+        "cluster_acc": 96.8
       }
     ]
   }

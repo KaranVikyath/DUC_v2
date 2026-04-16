@@ -1,3 +1,5 @@
 __pycache__/
 logs/
 PLAN.md
+cuda_kernels/build/
+cuda_kernels/*.egg-info/
