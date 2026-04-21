@@ -1,5 +1,5 @@
 """
-Build script for the fused pseudo-completion CUDA extension.
+Build script for DeLUCA CUDA extensions.
 
 Usage:
     cd cuda_kernels
@@ -10,18 +10,24 @@ Usage:
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
+NVCC_FLAGS = [
+    "--allow-unsupported-compiler",
+    "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
+]
+
 setup(
-    name="pseudo_completion_cuda",
+    name="deluca_cuda_extensions",
     ext_modules=[
         CUDAExtension(
             "pseudo_completion_cuda",
             ["pseudo_completion.cu"],
-            extra_compile_args={
-                "nvcc": [
-                    "--allow-unsupported-compiler",
-                    "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
-                ],
-            },
+            extra_compile_args={"nvcc": NVCC_FLAGS},
+        ),
+        CUDAExtension(
+            "cfs_solver_cuda",
+            ["cfs_solver.cu"],
+            extra_compile_args={"nvcc": NVCC_FLAGS},
+            libraries=["cusolver"],
         ),
     ],
     cmdclass={"build_ext": BuildExtension},

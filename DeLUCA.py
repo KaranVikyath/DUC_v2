@@ -26,6 +26,56 @@ def _load_pseudo_cuda():
         _pseudo_cuda = None
     return _pseudo_cuda
 
+# --- CUDA extension for CFS cuSOLVER SVD (Step 5) ---
+_cfs_cuda = None
+_cfs_cuda_checked = False
+
+def _load_cfs_cuda():
+    """Load the pre-built CFS cuSOLVER CUDA extension."""
+    global _cfs_cuda, _cfs_cuda_checked
+    if _cfs_cuda_checked:
+        return _cfs_cuda
+    _cfs_cuda_checked = True
+    try:
+        import cfs_solver_cuda
+        _cfs_cuda = cfs_solver_cuda
+    except ImportError:
+        _cfs_cuda = None
+    return _cfs_cuda
+
+
+class CusolverCFSFn(torch.autograd.Function):
+    """Autograd wrapper: cuSOLVER SVD forward + torch.svd_lowrank backward.
+
+    Forward uses cuSOLVER gesvdj (fast Jacobi SVD).
+    Backward recomputes SVD via torch.svd_lowrank for proper gradient flow
+    through the SVD — needed for training with missing data.
+    """
+
+    @staticmethod
+    def forward(ctx, Z, rank):
+        cuda_ext = _load_cfs_cuda()
+        PZ, V_rank, Coef = cuda_ext.forward(
+            Z.float().contiguous(), rank)
+        ctx.save_for_backward(Z)
+        ctx.rank = rank
+        ctx._coef = Coef
+        return PZ, Coef
+
+    @staticmethod
+    def backward(ctx, grad_PZ, grad_Coef):
+        Z, = ctx.saved_tensors
+        rank = ctx.rank
+        # Recompute SVD with torch for proper gradient through SVD → V → PZ
+        with torch.enable_grad():
+            Z_diff = Z.detach().requires_grad_(True)
+            Zt = Z_diff.t()
+            U, S, V = torch.svd_lowrank(Zt, q=rank)
+            VtZ = V.t() @ Z_diff
+            PZ = V @ VtZ
+            d_Z, = torch.autograd.grad(PZ, Z_diff, grad_PZ)
+        return d_Z, None
+
 
 class FusedPseudoCompletionFn(torch.autograd.Function):
     """Autograd wrapper: CUDA forward + backward when available, PyTorch fallback."""
@@ -368,18 +418,24 @@ class SelfExpressiveModule(nn.Module):
     
 
 class CFSModule(nn.Module):
-    """Coefficient-Feature Self-expressive module using randomized SVD."""
+    """Coefficient-Feature Self-expressive module — cuSOLVER SVD + fused projection."""
     def __init__(self, rank):
         super().__init__()
         self.rank = rank
 
     def forward(self, Z):
-        # Z: batch_size x features
-        Zt = Z.t()  # features x batch_size
-        # Randomized SVD: O(mn*rank) vs O(mn*min(m,n)) for full SVD
+        # Z: (batch_size, features_encoded)
+        # Step 5: cuSOLVER Jacobi SVD + fused projection (avoids B×B matrix)
+        cuda_ext = _load_cfs_cuda()
+        if Z.is_cuda and cuda_ext is not None:
+            PZ, self.Coef = CusolverCFSFn.apply(Z, self.rank)
+            return PZ, self.Coef
+
+        # Fallback: torch.svd_lowrank + fused projection
+        Zt = Z.t()  # (features, batch_size)
         U, S, V = torch.svd_lowrank(Zt, q=self.rank)
-        # V: (batch_size, rank) — already truncated
-        P = V @ V.t()
-        self.Coef = P.t()
-        PZ = self.Coef @ Z
+        # V: (batch_size, rank) — fused projection avoids (B,B) matrix
+        VtZ = V.t() @ Z          # (rank, features)
+        PZ = V @ VtZ              # (batch_size, features)
+        self.Coef = V @ V.t()     # (B, B) needed for clustering
         return PZ, self.Coef

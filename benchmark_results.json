@@ -208,5 +208,46 @@
         "cluster_acc": 96.8
       }
     ]
+  },
+  {
+    "step": "Step 5: cuSOLVER CFS",
+    "timestamp": "2026-04-18T23:14:14.106144",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 625,
+        "total_time_s": 29.69849010001053,
+        "avg_iter_ms": 47.51417455933988,
+        "std_iter_ms": 26.0798199240718,
+        "completion_acc": 100.0,
+        "cluster_acc": 97.8
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 624,
+        "total_time_s": 28.5844298999873,
+        "avg_iter_ms": 45.80536634621706,
+        "std_iter_ms": 3.9977372970842864,
+        "completion_acc": 99.19581143039477,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 482,
+        "total_time_s": 22.51505570000154,
+        "avg_iter_ms": 46.70868402407833,
+        "std_iter_ms": 3.6353898486150236,
+        "completion_acc": 84.75673572482053,
+        "cluster_acc": 99.8
+      }
+    ]
   }
 ]
