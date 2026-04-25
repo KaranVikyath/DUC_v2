@@ -29,6 +29,11 @@ setup(
             extra_compile_args={"nvcc": NVCC_FLAGS},
             libraries=["cusolver"],
         ),
+        CUDAExtension(
+            "masked_loss_cuda",
+            ["masked_loss.cu"],
+            extra_compile_args={"nvcc": NVCC_FLAGS},
+        ),
     ],
     cmdclass={"build_ext": BuildExtension},
 )

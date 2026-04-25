@@ -43,6 +43,56 @@ def _load_cfs_cuda():
         _cfs_cuda = None
     return _cfs_cuda
 
+# --- CUDA extension for fused masked-loss reduction (Step 6) ---
+_masked_loss_cuda = None
+_masked_loss_cuda_checked = False
+
+def _load_masked_loss_cuda():
+    """Load the pre-built fused masked-loss CUDA extension."""
+    global _masked_loss_cuda, _masked_loss_cuda_checked
+    if _masked_loss_cuda_checked:
+        return _masked_loss_cuda
+    _masked_loss_cuda_checked = True
+    try:
+        import masked_loss_cuda
+        _masked_loss_cuda = masked_loss_cuda
+    except ImportError:
+        _masked_loss_cuda = None
+    return _masked_loss_cuda
+
+
+class MaskedLossFn(torch.autograd.Function):
+    """Fused NaN-masking + 3-norm Frobenius loss kernel (Step 6).
+
+    Forward: single-pass warp-shuffle reduction — no intermediate tensors.
+    Backward: elementwise gradient w.r.t. Xc and decoded.
+    """
+
+    @staticmethod
+    def forward(ctx, x, Xc, decoded):
+        cuda_ext = _load_masked_loss_cuda()
+        loss, sum_d1, sum_d2, sum_d3 = cuda_ext.forward(
+            x.float().contiguous(),
+            Xc.float().contiguous(),
+            decoded.float().contiguous())
+        ctx.save_for_backward(x, Xc, decoded)
+        ctx._norms = (sum_d1.item() ** 0.5,
+                      sum_d2.item() ** 0.5,
+                      sum_d3.item() ** 0.5)
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_loss):
+        x, Xc, decoded = ctx.saved_tensors
+        nd1, nd2, nd3 = ctx._norms
+        cuda_ext = _load_masked_loss_cuda()
+        d_Xc, d_dec = cuda_ext.backward(
+            x.float().contiguous(),
+            Xc.float().contiguous(),
+            decoded.float().contiguous(),
+            nd1, nd2, nd3)
+        return None, grad_loss * d_Xc, grad_loss * d_dec
+
 
 class CusolverCFSFn(torch.autograd.Function):
     """Autograd wrapper: cuSOLVER SVD forward + torch.svd_lowrank backward.
@@ -208,17 +258,20 @@ class DeLUCA(nn.Module):
         PZ = PZ.view(Z.shape)
         decoded = self.decoder(PZ)
         
-        # Compute reconstruction loss — fused: single mask, reuse masked tensors
-        x_omega, mask_tensor = convert_nan(x)
-        Xc_m = Xc * mask_tensor
-        dec_m = decoded * mask_tensor
-        d1 = Xc_m - x_omega
-        d2 = Xc_m - dec_m
-        d3 = dec_m - x_omega
-        reconstruction_loss = (torch.norm(d1, p='fro')
-                               + torch.norm(d2, p='fro')
-                               + torch.norm(d3, p='fro'))
-        # reconstruction_loss= 0.5 * torch.norm((x_omega_hat - x_omega), p='fro')
+        # Step 6: fused masked-loss kernel (single pass, no intermediate tensors)
+        _ml_ext = _load_masked_loss_cuda()
+        if x.is_cuda and _ml_ext is not None:
+            reconstruction_loss = MaskedLossFn.apply(x, Xc, decoded)
+        else:
+            x_omega, mask_tensor = convert_nan(x)
+            Xc_m = Xc * mask_tensor
+            dec_m = decoded * mask_tensor
+            d1 = Xc_m - x_omega
+            d2 = Xc_m - dec_m
+            d3 = dec_m - x_omega
+            reconstruction_loss = (torch.norm(d1, p='fro')
+                                   + torch.norm(d2, p='fro')
+                                   + torch.norm(d3, p='fro'))
         autoencoder_loss = 0.5 * torch.norm(Z - PZ, p='fro')
 
         if self.cluster_model=="CFS":
