@@ -8,7 +8,7 @@ Usage:
 """
 
 from setuptools import setup
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
 
 NVCC_FLAGS = [
     "--allow-unsupported-compiler",
@@ -33,6 +33,11 @@ setup(
             "masked_loss_cuda",
             ["masked_loss.cu"],
             extra_compile_args={"nvcc": NVCC_FLAGS},
+        ),
+        CppExtension(
+            "data_prep_omp",
+            ["data_prep.cpp"],
+            extra_compile_args={"cxx": ["/openmp"]},  # MSVC OpenMP flag
         ),
     ],
     cmdclass={"build_ext": BuildExtension},

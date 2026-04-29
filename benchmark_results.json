@@ -290,5 +290,46 @@
         "cluster_acc": 99.2
       }
     ]
+  },
+  {
+    "step": "Step 7: OpenMP data prep",
+    "timestamp": "2026-04-28T23:33:30.637499",
+    "device": "cuda",
+    "config": {
+      "m": 100,
+      "n": 100,
+      "r": 5,
+      "K": 5,
+      "noise": 0
+    },
+    "results": [
+      {
+        "missing_pct": 0.0,
+        "iterations": 561,
+        "total_time_s": 14.982896900000924,
+        "avg_iter_ms": 26.70533672011866,
+        "std_iter_ms": 30.323504982415685,
+        "completion_acc": 100.0,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.3,
+        "iterations": 642,
+        "total_time_s": 15.957894200000737,
+        "avg_iter_ms": 24.854559812963522,
+        "std_iter_ms": 1.8916528074571293,
+        "completion_acc": 99.28468563815294,
+        "cluster_acc": 100.0
+      },
+      {
+        "missing_pct": 0.7,
+        "iterations": 436,
+        "total_time_s": 11.003091800004768,
+        "avg_iter_ms": 25.234451376232386,
+        "std_iter_ms": 2.404043930081886,
+        "completion_acc": 84.99408922489359,
+        "cluster_acc": 99.2
+      }
+    ]
   }
 ]

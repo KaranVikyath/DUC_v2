@@ -78,10 +78,23 @@ def run_benchmark(DeLUCA_cls, generate_data_fn, missing_data_generation_fn,
             break
     total_end = time.perf_counter()
 
-    # Completion accuracy
-    accuracy = 1 - np.linalg.norm(complete_data - full_data) / data_norm
+    # Completion accuracy — Step 7: parallel Frobenius norm via OpenMP
+    try:
+        from custom_funcs import _load_data_prep_omp
+        _omp = _load_data_prep_omp()
+    except Exception:
+        _omp = None
+
+    def _frob_diff(a, b):
+        if _omp is not None:
+            return _omp.parallel_frob_diff_norm(
+                np.ascontiguousarray(a, dtype=np.float64),
+                np.ascontiguousarray(b, dtype=np.float64))
+        return np.linalg.norm(a - b)
+
+    accuracy = 1 - _frob_diff(complete_data, full_data) / data_norm
     complete_data[~np.isnan(missing_data_input)] = missing_data_input[~np.isnan(missing_data_input)]
-    mod_acc = 1 - np.linalg.norm(complete_data - full_data) / data_norm
+    mod_acc = 1 - _frob_diff(complete_data, full_data) / data_norm
 
     # Clustering accuracy
     cluster_acc = 0.0

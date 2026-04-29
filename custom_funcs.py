@@ -9,6 +9,22 @@ import scipy.io as sio
 import os
 import copy
 
+# --- OpenMP data-prep extension (Step 7) ---
+_data_prep_omp = None
+_data_prep_omp_checked = False
+
+def _load_data_prep_omp():
+    global _data_prep_omp, _data_prep_omp_checked
+    if _data_prep_omp_checked:
+        return _data_prep_omp
+    _data_prep_omp_checked = True
+    try:
+        import data_prep_omp
+        _data_prep_omp = data_prep_omp
+    except ImportError:
+        _data_prep_omp = None
+    return _data_prep_omp
+
 def best_map(L1, L2):
     Label1 = np.unique(L1)
     nClass1 = len(Label1)
@@ -81,15 +97,17 @@ def err_rate(gt_s, s):
     return missrate
 
 def missing_data_generation(input, num_nans):
-    # Make a copy of the input array to avoid modifying the original array
-    input_copy = input.copy().astype(float)  # Ensure the array is of float type
-
-    # Randomly choose indices to assign NaN values
+    input_copy = input.copy().astype(float)
     indices = np.random.choice(input_copy.size, size=num_nans, replace=False)
 
-    # Assign NaN values to the chosen indices
-    input_copy.ravel()[indices] = np.nan
+    # Step 7: parallel NaN insertion via OpenMP
+    ext = _load_data_prep_omp()
+    if ext is not None:
+        flat = np.ascontiguousarray(input_copy.ravel())
+        ext.parallel_nan_insert(flat, indices.astype(np.int64))
+        return flat.reshape(input_copy.shape)
 
+    input_copy.ravel()[indices] = np.nan
     return input_copy
 
 def convert_nan(input):
