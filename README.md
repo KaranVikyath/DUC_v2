@@ -282,7 +282,7 @@ If you use this code, please cite the original DUC paper:
 
 ```bibtex
 @inproceedings{veerannarupashree2025duc,
-  title     = {Deep Union Completion for Subspace Clustering with Missing Data},
+  title     = {Deep Union Completion},
   author    = {Veeranna Rupashree, Karan Vikyath and Baskar, Siddharth and others},
   booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
   year      = {2025}
