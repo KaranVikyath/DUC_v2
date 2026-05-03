@@ -1,5 +1,19 @@
 __pycache__/
 logs/
 PLAN.md
-cuda_kernels/build/
-cuda_kernels/*.egg-info/
+
+# CUDA extension build artifacts (any location)
+**/*.egg-info/
+**/cuda_kernels/build/
+**/cuda_kernels/*.egg-info/
+
+# Project-specific data outputs
+FinalProject/data/logs/
+
+# Keep the FinalProject/build/ directory but ignore its contents (except .gitkeep)
+FinalProject/build/*
+!FinalProject/build/.gitkeep
+
+# Slurm output logs
+slurm-*.out
+slurm-*.err

@@ -126,25 +126,29 @@ OpenMP  →  parallel NaN insert (1.7×)  +  parallel ‖A−B‖_F (12.6×)
 
 ```
 DUC_v2/
-├── DeLUCA.py                   # Optimized model — all optimizations active
-├── DeLUCA_original.py          # Unmodified DUC v1 baseline for comparison
-├── custom_funcs.py             # Data utils, clustering, OpenMP loader
-├── benchmark.py                # Benchmark harness (run & compare)
-├── benchmark_results.json      # Saved results for all optimization stages
-│
-└── cuda_kernels/
-    ├── pseudo_completion.cu    # Fused pseudo-completion (naive + hybrid)
-    ├── cfs_solver.cu           # cuSOLVER SVD + fused low-rank projection
-    ├── masked_loss.cu          # Fused masked-loss reduction kernel
-    ├── data_prep.cpp           # OpenMP data preprocessing
-    ├── setup.py                # Builds all 4 extensions in one command
-    │
-    ├── test_kernel.py          # Correctness + timing: naive CUDA kernels
-    ├── test_hybrid.py          # Correctness + timing: hybrid cuBLAS+CUDA
-    ├── test_cfs.py             # Correctness + timing: cuSOLVER SVD
-    ├── test_masked_loss.py     # Correctness + timing: fused loss kernel
-    └── test_data_prep.py       # Correctness + timing: OpenMP ops
+└── FinalProject/                 # all project code lives here
+    ├── README.md                 # build & run instructions for graders
+    ├── run_euler.slurm           # Slurm batch script for Euler cluster
+    ├── src/                      # source code
+    │   ├── DeLUCA.py             # optimized model — all stages active
+    │   ├── DeLUCA_original.py    # unmodified DUC v1 baseline
+    │   ├── custom_funcs.py       # data utils, clustering, OpenMP loader
+    │   ├── benchmark.py          # benchmark harness (run & compare)
+    │   ├── dataset_params.py     # dataset configuration
+    │   └── cuda_kernels/
+    │       ├── pseudo_completion.cu   # fused pseudo-completion (naive + hybrid)
+    │       ├── cfs_solver.cu          # cuSOLVER SVD + fused low-rank projection
+    │       ├── masked_loss.cu         # fused masked-loss reduction kernel
+    │       ├── data_prep.cpp          # OpenMP data preprocessing
+    │       ├── setup.py               # builds all 4 extensions
+    │       └── test_*.py              # correctness + timing tests
+    ├── data/                     # input/output data
+    │   └── benchmark_results.json     # saved benchmark results
+    └── build/                    # build artifacts land here
 ```
+
+> A pre-trained model is **not** shipped — the full benchmark trains and
+> evaluates in under a minute, so graders reproduce results directly.
 
 ---
 
@@ -165,13 +169,13 @@ DUC_v2/
 ```bash
 # 1. Clone the repository
 git clone https://github.com/KaranVikyath/DUC_v2.git
-cd DUC_v2
+cd DUC_v2/FinalProject
 
 # 2. Install Python dependencies
 pip install torch numpy scipy scikit-learn munkres tensorboard
 
 # 3. Build all CUDA + OpenMP extensions (one command)
-cd cuda_kernels && python setup.py install && cd ..
+cd src/cuda_kernels && python setup.py install --user && cd ../..
 ```
 
 > **Windows note:** CUDA 12.1 + VS2026 flags (`--allow-unsupported-compiler`,
@@ -181,29 +185,45 @@ cd cuda_kernels && python setup.py install && cd ..
 
 ## Usage
 
-### Run Benchmark
+### Run on Euler (Slurm)
 
 ```bash
-# Run optimized pipeline and save results
+cd FinalProject
+sbatch run_euler.slurm
+```
+
+Builds extensions, runs optimized + baseline benchmarks, prints comparison
+report. Outputs to `slurm-<jobid>.out` and `data/benchmark_results.json`.
+Expected wall-clock: ~3 minutes.
+
+### Run Locally
+
+```bash
+cd FinalProject/src
+
+# Optimized pipeline
 python benchmark.py --step "DUC v2"
 
-# Run original baseline for comparison
+# Original baseline
 python benchmark.py --original --step "DUC v1 baseline"
 
-# View comparison table across all saved steps
+# Comparison report
 python benchmark.py --report
 ```
 
 ### Run Tests
 
 ```bash
-python cuda_kernels/test_hybrid.py       # hybrid cuBLAS+CUDA kernels
-python cuda_kernels/test_cfs.py          # cuSOLVER SVD
-python cuda_kernels/test_masked_loss.py  # fused loss kernel
-python cuda_kernels/test_data_prep.py    # OpenMP ops
+cd FinalProject/src/cuda_kernels
+python test_hybrid.py        # hybrid cuBLAS+CUDA kernels
+python test_cfs.py           # cuSOLVER SVD
+python test_masked_loss.py   # fused loss kernel
+python test_data_prep.py     # OpenMP ops
 ```
 
 ### Quick-Start in Python
+
+Run from `FinalProject/src/`:
 
 ```python
 import torch

@@ -1,0 +1,3 @@
+# Build artifacts (compiled .so/.pyd, .obj, .lib) land here when running
+# `python setup.py install` from src/cuda_kernels/. Tracked with .gitkeep
+# so the directory exists in git.

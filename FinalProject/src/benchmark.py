@@ -22,7 +22,9 @@ import sys
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-RESULTS_FILE = "benchmark_results.json"
+# Results file lives in FinalProject/data/ (one level up from src/)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+RESULTS_FILE = os.path.join(_HERE, "..", "data", "benchmark_results.json")
 
 # --- Config ---
 CFG_M, CFG_N, CFG_R, CFG_K, CFG_NOISE = 100, 100, 5, 5, 0
@@ -55,7 +57,8 @@ def run_benchmark(DeLUCA_cls, generate_data_fn, missing_data_generation_fn,
         kernel_size, output_padding, lr, K, rank,
         reg_const1=reg1, reg_const2=reg2,
         batch_size=batch_size, model_path=None,
-        logs_path=f"logs/benchmark_{int(missing_pct*100)}pct",
+        logs_path=os.path.join(_HERE, "..", "data", "logs",
+                               f"benchmark_{int(missing_pct*100)}pct"),
         cluster_model="CFS", device=device)
     model.to(device)
 
