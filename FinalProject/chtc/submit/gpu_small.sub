@@ -1,0 +1,40 @@
+# GPU Small — v3 jobs and small-dataset v1 jobs.
+# Every DUC configuration finishes in minutes, so "short" is right and it gets
+# a much higher concurrent-job cap than "medium".
+
+universe = container
+container_image = docker://$(image_name)
+
+executable = chtc/scripts/run_experiment.sh
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+
+transfer_input_files = project.tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = results.tar.gz
+transfer_output_remaps = "results.tar.gz = tars/results_$(Cluster)_$(Process).tar.gz"
+
+request_gpus = 1
+# Floor sm_7.5 (torch 2.7 dropped older); ceiling is open so Blackwell nodes
+# are usable — the cu12.8 image has kernels for them.
+gpus_minimum_capability = $(gpu_cap_min:7.5)
+gpus_maximum_capability = $(gpu_cap_max:12.0)
+gpus_minimum_memory     = $(gpu_mem:8000)
++WantGPULab   = true
++GPUJobLength = "short"
+
+request_cpus   = 2
+request_memory = $(req_mem:8GB)
+request_disk   = $(req_disk:10GB)
+
+Requirements = (Target.HasCHTCStaging == true)
+
+environment = "STAGING_USER=$(staging_user)"
+
+output = logs/$(Cluster).$(Process).out
+error  = logs/$(Cluster).$(Process).err
+log    = logs/$(Cluster).$(Process).log
+
+max_retries = 2
+
+queue

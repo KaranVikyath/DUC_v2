@@ -1,0 +1,42 @@
+# GPU Large — v1 baselines on real datasets, and large-B v3 runs.
+#
+# v1's pseudo-completion weight is (F, B, B): 3.1 GB of VRAM on ORL, and it is
+# built on the HOST before .to(device), so host memory must exceed the device
+# figure. Anything past ORL needs 39 GB+ and will not fit any single GPU — those
+# rows exist in the paper as "infeasible by construction", not as jobs.
+
+universe = container
+container_image = docker://$(image_name)
+
+executable = chtc/scripts/run_experiment.sh
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+
+transfer_input_files = project.tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = results.tar.gz
+transfer_output_remaps = "results.tar.gz = tars/results_$(Cluster)_$(Process).tar.gz"
+
+request_gpus = 1
+gpus_minimum_capability = $(gpu_cap_min:7.5)
+gpus_maximum_capability = $(gpu_cap_max:12.0)
+gpus_minimum_memory     = $(gpu_mem:24000)
++WantGPULab   = true
+# v1 is ~1.3 s/iter on ORL and can run ~900 iterations, so leave headroom.
++GPUJobLength = "medium"
+
+request_cpus   = 4
+request_memory = $(req_mem:32GB)
+request_disk   = $(req_disk:20GB)
+
+Requirements = (Target.HasCHTCStaging == true)
+
+environment = "STAGING_USER=$(staging_user)"
+
+output = logs/$(Cluster).$(Process).out
+error  = logs/$(Cluster).$(Process).err
+log    = logs/$(Cluster).$(Process).log
+
+max_retries = 2
+
+queue

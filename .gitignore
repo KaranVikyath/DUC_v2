@@ -17,3 +17,16 @@ FinalProject/build/*
 # Slurm output logs
 slurm-*.out
 slurm-*.err
+
+# Datasets — ~128 MB, staged to CHTC rather than committed (see FinalProject/chtc/README.md)
+FinalProject/data/*.mat
+FinalProject/data/*.csv
+
+# Experiment outputs
+FinalProject/data/shards/
+FinalProject/data/*.backup.json
+FinalProject/chtc/dag/*.dag
+FinalProject/chtc/logs/
+FinalProject/chtc/tars/
+FinalProject/chtc/results/
+FinalProject/project.tar.gz
