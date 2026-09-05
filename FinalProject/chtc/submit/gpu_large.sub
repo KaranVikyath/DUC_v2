@@ -11,7 +11,8 @@ container_image = docker://$(image_name)
 executable = chtc/scripts/run_experiment.sh
 arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
 
-transfer_input_files = project.tar.gz
+# One .mat per job (largest 44 MB) — inside HTCondor limits, no /staging needed.
+transfer_input_files = project.tar.gz $(matfile)
 should_transfer_files = YES
 when_to_transfer_output = ON_EXIT
 transfer_output_files = results.tar.gz
@@ -28,10 +29,6 @@ gpus_minimum_memory     = $(gpu_mem:24000)
 request_cpus   = 4
 request_memory = $(req_mem:32GB)
 request_disk   = $(req_disk:20GB)
-
-Requirements = (Target.HasCHTCStaging == true)
-
-environment = "STAGING_USER=$(staging_user)"
 
 output = logs/$(Cluster).$(Process).out
 error  = logs/$(Cluster).$(Process).err

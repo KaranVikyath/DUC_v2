@@ -43,15 +43,19 @@ declare -A MATFILE=(
 if [ "$DATASET" != "synthetic" ]; then
     F="${MATFILE[$DATASET]:-}"
     if [ -z "$F" ]; then echo "ERROR: no .mat mapping for $DATASET"; exit 1; fi
-    SRC="/staging/${STAGING_USER:-}/duc_data/$F"
-    if [ -f "$SRC" ]; then
-        echo "Copying $F from staging"
-        cp "$SRC" data/
+    # HTCondor drops transfer_input_files in the scratch dir alongside the tarball.
+    if [ -f "$F" ]; then
+        echo "Using transferred $F ($(du -h "$F" | cut -f1))"
+        mv "$F" data/
     elif [ -f "data/$F" ]; then
-        echo "Using $F bundled in the tarball"
+        echo "Using $F already in data/"
+    elif [ -n "${STAGING_USER:-}" ] && [ -f "/staging/$STAGING_USER/duc_data/$F" ]; then
+        echo "Copying $F from staging"          # only if a staging dir was provisioned
+        cp "/staging/$STAGING_USER/duc_data/$F" data/
     else
-        echo "ERROR: $F not in staging ($SRC) or tarball. Run stage_data.sh first."
-        exit 1
+        echo "ERROR: $F was not transferred. Check that the DAG sets matfile= and"
+        echo "       that the file exists on the submit node."
+        ls -la; exit 1
     fi
 fi
 

@@ -12,7 +12,7 @@ chtc/
 │   └── gpu_large.sub       v1 baselines + big datasets, 24 GB, medium
 ├── scripts/
 │   ├── build_project_tar.sh  repo → project.tar.gz (embeds git SHA)
-│   ├── stage_data.sh         .mat files → /staging
+│   ├── stage_data.sh         verify .mat files on the submit node
 │   └── run_experiment.sh     runs inside the container
 └── dag/                    generated DAGs
 ```
@@ -30,29 +30,26 @@ docker push <dockerhub-user>/duc-chtc:latest
 
 Only rebuild when dependencies change — code changes ship in the tarball.
 
-## 1. One-time: get the datasets into staging
+## 1. One-time: put the datasets on the submit node
 
-The eight `.mat` files total ~128 MB, which is past CHTC's guidance for
-`transfer_input_files`, so they live in `/staging` and each job copies only the
-one it needs. They are **not** in git for the same reason.
+The eight `.mat` files total ~128 MB, but **each job needs exactly one of them**
+and the largest is 44 MB — inside HTCondor's <100 MB per-file / <500 MB per-job
+transfer limits. So they ride along via `transfer_input_files` from your home
+directory. They are gitignored, so `git pull` will not bring them.
 
-From your laptop:
-
-```bash
-# ~128 MB, one transfer
-scp FinalProject/data/*.mat <netid>@ap2001.chtc.wisc.edu:/staging/<netid>/duc_data/
-```
-
-If the directory does not exist yet, on the submit node first:
+**Do not use `/staging`.** That is for files individually larger than 1 GB, and
+those directories are provisioned by CHTC staff — `mkdir /staging/$USER` gives
+"Permission denied" by design. Email chtc@cs.wisc.edu only if you later need one.
 
 ```bash
-mkdir -p /staging/$USER/duc_data
-```
+# on the submit node
+mkdir -p ~/duc_data
 
-Then verify (also prints your staging usage):
+# from your laptop
+scp FinalProject/data/*.mat <netid>@ap2001.chtc.wisc.edu:~/duc_data/
 
-```bash
-bash chtc/scripts/stage_data.sh $USER
+# back on the submit node — checks every file is present and prints quota
+bash chtc/scripts/stage_data.sh
 ```
 
 | file | dataset | size |
@@ -74,7 +71,7 @@ bash chtc/scripts/build_project_tar.sh
 
 python chtc/generate_jobs.py --exp main \
     --image <dockerhub-user>/duc-chtc:latest \
-    --staging-user $USER > chtc/dag/main.dag
+    > chtc/dag/main.dag
 
 mkdir -p logs tars results
 condor_submit_dag chtc/dag/main.dag
@@ -144,9 +141,10 @@ matrix is a dense `(B, B)` on the host, 149 GB at B=200k.
 
 Written against the CHTC docs, not yet run there. Check on first submit:
 
+- Submit from your **home** directory, never from inside `/staging`.
 - GPU Lab availability at `gpus_minimum_memory = 24000` for `gpu_large.sub`.
   If those queue too long, drop it and skip v1-on-ORL.
 - `gpus_maximum_capability = 12.0` assumes the cu12.8 image really carries
   Blackwell kernels. On "no kernel image is available", pass `gpu_cap_max="9.0"`
   in the DAG VARS.
-- Staging quota — `stage_data.sh` prints `du -sh` at the end.
+- Home-directory quota — `stage_data.sh` prints it at the end.

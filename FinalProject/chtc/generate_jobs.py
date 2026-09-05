@@ -2,7 +2,7 @@
 Generate an HTCondor DAG for the DUC v1-vs-v3 experiments.
 
     python chtc/generate_jobs.py --exp main --image <user>/duc-chtc:latest \
-        --staging-user <netid> > chtc/dag/main.dag
+        > chtc/dag/main.dag
     condor_submit_dag chtc/dag/main.dag
 
 Experiment groups
@@ -36,6 +36,22 @@ V1_GPU_LIMIT_GB = 20.0          # largest single-GPU allocation we will request
 # Past ~20k samples the dense (B,B) coefficient matrix is a host-side problem
 # (149 GB at B=200k), so clustering is skipped and only completion is reported.
 CLUSTER_LIMIT = 20000
+
+
+# Each job needs exactly ONE dataset file, and the largest is 44 MB — inside
+# HTCondor's <100 MB per-file / <500 MB per-job transfer limits. /staging is for
+# files individually over 1 GB and has to be provisioned by CHTC staff, so plain
+# transfer_input_files is the right mechanism here.
+MATFILE = {
+    "ORL": "ORL_32x32.mat",
+    "COIL20": "COIL20.mat",
+    "COIL100": "COIL100.mat",
+    "EYaleB": "YaleBCrop025.mat",
+    "Flowers": "flowers.mat",
+    "OxfordPet": "oxford_pet.mat",
+    "HARUS": "HARUS.mat",
+    "DSDD": "Dataset_for_Sensorless_Drive_diagnosis.mat",
+}
 
 
 def jobs_for(exp):
@@ -91,7 +107,8 @@ def main():
     ap.add_argument("--exp", default="main",
                     choices=["syn", "real", "rank", "scale", "main", "all"])
     ap.add_argument("--image", required=True, help="docker image, user/duc-chtc:latest")
-    ap.add_argument("--staging-user", required=True, help="CHTC netid for /staging")
+    ap.add_argument("--data-dir", default="$ENV(HOME)/duc_data",
+                    help="where the .mat files live on the submit node")
     ap.add_argument("--retry", type=int, default=2)
     args = ap.parse_args()
 
@@ -99,7 +116,7 @@ def main():
     n_v1 = sum(1 for j in js if j["version"] == "v1")
     print(f"# ===== DUC v1-vs-v3 DAG — group '{args.exp}' =====")
     print(f"# {len(js)} jobs ({n_v1} v1, {len(js)-n_v1} v3)")
-    print(f"# image {args.image} | staging /staging/{args.staging_user}/duc_data")
+    print(f"# image {args.image} | datasets {args.data_dir}")
     print("#")
     print("# v1's pseudo-completion weight is (F, B, B); it is queued only where")
     print("# 5*F*B^2*4 bytes fits one GPU:")
@@ -110,11 +127,13 @@ def main():
 
     for j in js:
         sub = f"chtc/submit/gpu_{j['sub']}.sub"
+        mf = MATFILE.get(j["dataset"], "")
+        matfile = f"{args.data_dir}/{mf}" if mf else ""
         print(f"JOB {j['name']} {sub}")
         print(f"VARS {j['name']} version=\"{j['version']}\" dataset=\"{j['dataset']}\" "
               f"bsize=\"{j['bsize']}\" missing=\"{j['missing']}\" seed=\"{j['seed']}\" "
               f"rankpseudo=\"{j['rankpseudo']}\" extra_args=\"{j['extra']}\" "
-              f"image_name=\"{args.image}\" staging_user=\"{args.staging_user}\"")
+              f"image_name=\"{args.image}\" matfile=\"{matfile}\"")
         print(f"RETRY {j['name']} {args.retry}\n")
 
 
