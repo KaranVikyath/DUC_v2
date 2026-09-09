@@ -9,6 +9,10 @@ set -uo pipefail
 VERSION="${1}"; DATASET="${2}"; BSIZE="${3}"; MISSING="${4}"; SEED="${5}"; RP="${6}"
 shift 6
 EXTRA="${*:-}"
+# The DAG uses "-" as a placeholder for "no extra flags" because an empty VARS
+# value would collapse the argument list. Forwarding it verbatim makes argparse
+# choke on a bare "-" positional, which failed nearly every job.
+[ "$EXTRA" = "-" ] && EXTRA=""
 
 echo "=== DUC experiment runner ==="
 echo "version=$VERSION dataset=$DATASET B=$BSIZE missing=$MISSING seed=$SEED r_p=$RP"
@@ -18,6 +22,14 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader ||
 
 # HTCondor drops transferred files in the scratch dir.
 if [ -n "${_CONDOR_SCRATCH_DIR:-}" ]; then cd "$_CONDOR_SCRATCH_DIR"; fi
+
+# transfer_output_files names results.tar.gz unconditionally, so if the script
+# dies before creating it HTCondor reports an opaque "transfer output files
+# failure" and the real error never leaves the execute node. Guarantee the
+# tarball exists on every exit path, with the log inside.
+mkdir -p results
+trap 'echo "exit=$?" > results/exit_status.txt 2>/dev/null; \
+      tar -czf results.tar.gz results 2>/dev/null || true' EXIT
 
 if [ -f project.tar.gz ]; then
     tar -xzf project.tar.gz
@@ -65,14 +77,18 @@ if [ "$BSIZE" != "-" ]; then BFLAG="--B $BSIZE"; fi
 OUT="results/${DATASET}_${VERSION}_rp${RP}_m${MISSING}_s${SEED}.json"
 
 cd src
+# Tee the run so a traceback comes back inside results.tar.gz rather than being
+# lost on the execute node.
 python bench_v1_v3.py --single \
     --version "$VERSION" --dataset "$DATASET" $BFLAG \
     --missing "$MISSING" --seed "$SEED" --rank-pseudo "$RP" \
-    --out "../$OUT" $EXTRA
-STATUS=$?
+    --out "../$OUT" $EXTRA 2>&1 | tee "../results/run.log"
+STATUS=${PIPESTATUS[0]}
 cd ..
 
-if [ $STATUS -ne 0 ]; then echo "run failed with status $STATUS"; exit $STATUS; fi
+if [ "$STATUS" -ne 0 ]; then
+    echo "run failed with status $STATUS — see results/run.log"
+    exit "$STATUS"          # the EXIT trap still ships results.tar.gz
+fi
 
-tar -czf results.tar.gz results/
 echo "=== done $(date -u) — wrote $OUT ==="
