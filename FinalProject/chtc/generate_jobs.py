@@ -128,12 +128,14 @@ def main():
     for j in js:
         sub = f"chtc/submit/gpu_{j['sub']}.sub"
         mf = MATFILE.get(j["dataset"], "")
-        matfile = f"{args.data_dir}/{mf}" if mf else ""
+        # transfer_input_files is COMMA-separated. Build the whole list here so
+        # synthetic jobs (no .mat) do not end up with a dangling comma.
+        inputs = ("project.tar.gz," + f"{args.data_dir}/{mf}") if mf else "project.tar.gz"
         print(f"JOB {j['name']} {sub}")
         print(f"VARS {j['name']} version=\"{j['version']}\" dataset=\"{j['dataset']}\" "
               f"bsize=\"{j['bsize']}\" missing=\"{j['missing']}\" seed=\"{j['seed']}\" "
               f"rankpseudo=\"{j['rankpseudo']}\" extra_args=\"{j['extra']}\" "
-              f"image_name=\"{args.image}\" matfile=\"{matfile}\"")
+              f"image_name=\"{args.image}\" inputs=\"{inputs}\"")
         print(f"RETRY {j['name']} {args.retry}\n")
 
 
