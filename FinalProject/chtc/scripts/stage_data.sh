@@ -9,7 +9,7 @@
 # directory and ride along via transfer_input_files.
 #
 # Put them there from your laptop with:
-#   scp FinalProject/data/*.mat <netid>@ap2001.chtc.wisc.edu:~/duc_data/
+#   scp FinalProject/data/*.mat veerannarupa@ap2002.chtc.wisc.edu:~/duc_data/
 #
 #   bash chtc/scripts/stage_data.sh [data_dir]
 set -euo pipefail
@@ -23,7 +23,7 @@ echo "Checking $DEST"
 if [ ! -d "$DEST" ]; then
     echo "  missing — create it and copy the .mat files over:"
     echo "    mkdir -p $DEST"
-    echo "    scp FinalProject/data/*.mat <netid>@ap2001.chtc.wisc.edu:$DEST/"
+    echo "    scp FinalProject/data/*.mat veerannarupa@ap2002.chtc.wisc.edu:$DEST/"
     exit 1
 fi
 

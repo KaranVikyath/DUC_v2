@@ -5,8 +5,8 @@
 # sm_90 and crash-loops on Blackwell with "no kernel image is available".
 #
 # Build and push (from FinalProject/):
-#   docker build -t <dockerhub-user>/duc-chtc:latest -f chtc/Dockerfile .
-#   docker push <dockerhub-user>/duc-chtc:latest
+#   docker build -t karanvikyath17/duc-chtc:latest -f chtc/Dockerfile .
+#   docker push karanvikyath17/duc-chtc:latest
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends git gcc g++ && \

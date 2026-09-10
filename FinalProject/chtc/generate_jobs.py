@@ -1,7 +1,7 @@
 """
 Generate an HTCondor DAG for the DUC v1-vs-v3 experiments.
 
-    python chtc/generate_jobs.py --exp main --image <user>/duc-chtc:latest \
+    python chtc/generate_jobs.py --exp main --image karanvikyath17/duc-chtc:latest \
         > chtc/dag/main.dag
     condor_submit_dag chtc/dag/main.dag
 
@@ -106,7 +106,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default="main",
                     choices=["syn", "real", "rank", "scale", "main", "all"])
-    ap.add_argument("--image", required=True, help="docker image, user/duc-chtc:latest")
+    ap.add_argument("--image", default="karanvikyath17/duc-chtc:latest",
+                    help="docker image (default: %(default)s)")
     ap.add_argument("--data-dir", default="$ENV(HOME)/duc_data",
                     help="where the .mat files live on the submit node")
     ap.add_argument("--retry", type=int, default=2)

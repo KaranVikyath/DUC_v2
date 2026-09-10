@@ -24,8 +24,8 @@ chtc/
 Needs Docker locally. From `FinalProject/`:
 
 ```bash
-docker build -t <dockerhub-user>/duc-chtc:latest -f chtc/Dockerfile .
-docker push <dockerhub-user>/duc-chtc:latest
+docker build -t karanvikyath17/duc-chtc:latest -f chtc/Dockerfile .
+docker push karanvikyath17/duc-chtc:latest
 ```
 
 Only rebuild when dependencies change — code changes ship in the tarball.
@@ -46,7 +46,7 @@ those directories are provisioned by CHTC staff — `mkdir /staging/$USER` gives
 mkdir -p ~/duc_data
 
 # from your laptop
-scp FinalProject/data/*.mat <netid>@ap2001.chtc.wisc.edu:~/duc_data/
+scp FinalProject/data/*.mat veerannarupa@ap2002.chtc.wisc.edu:~/duc_data/
 
 # back on the submit node — checks every file is present and prints quota
 bash chtc/scripts/stage_data.sh
@@ -70,7 +70,7 @@ git pull
 bash chtc/scripts/build_project_tar.sh
 
 python chtc/generate_jobs.py --exp main \
-    --image <dockerhub-user>/duc-chtc:latest \
+    --image karanvikyath17/duc-chtc:latest \
     > chtc/dag/main.dag
 
 mkdir -p logs tars results
