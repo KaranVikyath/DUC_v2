@@ -35,6 +35,14 @@ output = logs/$(Cluster).$(Process).out
 error  = logs/$(Cluster).$(Process).err
 log    = logs/$(Cluster).$(Process).log
 
-max_retries = 2
+# Do not re-match the machine a job just failed on. A node with a broken
+# NVIDIA container hook (e.g. "failed to create link libcuda.so.1 ...
+# bad file descriptor") fails in seconds, so it grabs the same jobs over
+# and over and drains the DAG onto one dead machine.
+# To exclude a specific known-bad host, add to the DAG VARS:
+#   bad_node="gpu4003.chtc.wisc.edu"
+requirements = (Machine =!= LastRemoteHost) && (Machine != "$(bad_node:no.such.host)")
+
+max_retries = 5
 
 queue
