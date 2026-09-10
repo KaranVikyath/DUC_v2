@@ -46,7 +46,10 @@ class DeLUCA(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
         # Learning rate scheduler
-        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.9, patience=10, verbose=False)
+        # `verbose=` was removed in torch 2.7 (deprecated since 2.2); it defaulted
+        # to False, so this is a no-op that keeps the published baseline runnable
+        # on both 2.6 (local) and 2.7 (CHTC container).
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.9, patience=10)
 
         # Tensorboard Summary Writer
         self.summary_writer = SummaryWriter(logs_path)
@@ -122,7 +125,9 @@ class PseudoCompletion(nn.Module):
 
         self.input_shape = input_shape
         self.flat_layer_size = flat_layer_size
-        self.feature_size = np.product(self.input_shape[1:])
+        # np.product was removed in numpy 2.0; np.prod is the identical function
+        # and works on both 1.x (local) and 2.x (CHTC container, unpinned).
+        self.feature_size = int(np.prod(self.input_shape[1:]))
         self.fc_layers = nn.ModuleList()
         for i in range(self.feature_size):
             # layer = nn.Linear(flat_layer_size[0], flat_layer_size[0],bias = True)

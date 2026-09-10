@@ -439,8 +439,11 @@ class DeLUCAV3(nn.Module):
         self.decoder = Decoder(enc_layer_size[-1], deco_layer_size, kernel_size, output_padding)
 
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        # No `verbose=`: deprecated in torch 2.2 and REMOVED in 2.7, so passing it
+        # is a TypeError on the CHTC container image even though it still works
+        # on 2.6 locally. verbose=False was the default behaviour anyway.
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.9,
-                                           patience=10, verbose=False)
+                                           patience=10)
         self.summary_writer = SummaryWriter(logs_path)
 
         self._x_src = None      # identity of the cached input array
