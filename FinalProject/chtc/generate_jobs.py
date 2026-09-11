@@ -15,6 +15,7 @@ Experiment groups
 """
 
 import argparse
+import math
 
 SEEDS = [17, 18, 19, 20, 21]
 MISSING = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -54,22 +55,42 @@ MATFILE = {
 }
 
 
+def host_mem_gb(B, F, clustering):
+    """Host RAM a job needs, in GB — the thing that actually held jobs.
+
+    Clustering is the driver: thrC sorts and argsorts the dense (B,B) and
+    allocates a float64 copy (~24*B^2 bytes), then post_proC symmetrises it and
+    forms U U^T and its powers (~32*B^2). That is ~56*B^2 bytes, i.e. 5.6 GB at
+    B=10k — which overran an 8 GB request. Everything else is a dozen or so
+    float64 (B,F) copies plus the torch/CUDA context.
+    """
+    base = 8.0                                   # torch + CUDA context + model
+    dense = 56.0 * B * B / 1e9 if clustering else 0.0
+    arrays = 12.0 * B * F * 8 / 1e9
+    return int(math.ceil(base + dense + arrays))
+
+
 def jobs_for(exp):
     out = []
 
-    def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-"):
+    def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-",
+            B=200, F=50):
+        mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
+        # Pick the submit file from what the job actually needs, rather than
+        # guessing, and pass the exact figure through as req_mem.
+        sub = "large" if (mem > 8 or sub == "large") else "small"
         out.append(dict(name=name, sub=sub, version=version, dataset=dataset,
                         bsize=bsize, missing=missing, seed=seed, rankpseudo=rp,
-                        extra=extra))
+                        extra=extra, req_mem=f"{mem}GB"))
 
     if exp in ("syn", "main", "all"):
         # The headline 1-for-1: identical data, mask, and seed for both versions.
         for s in SEEDS:
             for m in MISSING:
                 add(f"syn_v1_m{int(m*100)}_s{s}", "small", "v1",
-                    "synthetic", 200, m, s, 10)
+                    "synthetic", 200, m, s, 10, B=200, F=50)
                 add(f"syn_v3_m{int(m*100)}_s{s}", "small", "v3",
-                    "synthetic", 200, m, s, 1)
+                    "synthetic", 200, m, s, 1, B=200, F=50)
 
     if exp in ("real", "main", "all"):
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
@@ -77,13 +98,13 @@ def jobs_for(exp):
             for s in SEEDS:
                 for m in MISSING:
                     add(f"real_v3_{ds}_m{int(m*100)}_s{s}", sub, "v3",
-                        ds, "-", m, s, 1, extra)
+                        ds, "-", m, s, 1, extra, B=B, F=F)
             if v1gb <= V1_GPU_LIMIT_GB:
                 # ORL only. ~1.3 s/iter, so keep the v1 grid deliberately small.
                 for s in SEEDS[:3]:
                     for m in (0.3, 0.5, 0.7):
                         add(f"real_v1_{ds}_m{int(m*100)}_s{s}", "large", "v1",
-                            ds, "-", m, s, 10)
+                            ds, "-", m, s, 10, B=B, F=F)
 
     if exp in ("rank", "all"):
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
@@ -91,13 +112,13 @@ def jobs_for(exp):
             for rp in (1, 5, 10, 25):
                 for s in SEEDS[:3]:
                     add(f"rank_{ds}_rp{rp}_s{s}", sub, "v3", ds, "-", 0.3, s,
-                        rp, extra)
+                        rp, extra, B=B, F=F)
 
     if exp in ("scale", "all"):
         for B in (10000, 25000, 50000, 100000, 200000):
             extra = "--no-cluster" if B > CLUSTER_LIMIT else "-"
-            add(f"scale_B{B}", "large" if B >= 50000 else "small", "v3",
-                "synthetic", B, 0.3, 17, 1, extra)
+            add(f"scale_B{B}", "small", "v3",
+                "synthetic", B, 0.3, 17, 1, extra, B=B, F=50)
 
     return out
 
@@ -136,7 +157,8 @@ def main():
         print(f"VARS {j['name']} version=\"{j['version']}\" dataset=\"{j['dataset']}\" "
               f"bsize=\"{j['bsize']}\" missing=\"{j['missing']}\" seed=\"{j['seed']}\" "
               f"rankpseudo=\"{j['rankpseudo']}\" extra_args=\"{j['extra']}\" "
-              f"image_name=\"{args.image}\" inputs=\"{inputs}\"")
+              f"image_name=\"{args.image}\" inputs=\"{inputs}\" "
+              f"req_mem=\"{j['req_mem']}\"")
         print(f"RETRY {j['name']} {args.retry}\n")
 
 

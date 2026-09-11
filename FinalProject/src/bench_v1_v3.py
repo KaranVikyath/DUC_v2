@@ -1170,10 +1170,14 @@ def single_run(args):
     if args.max_iters:
         P["max_iters"] = args.max_iters
     if device.type == "cuda":
+        # Warmup exists only to allocate the cuBLAS/cuSOLVER workspace before the
+        # measured run. It must never cluster: that would build the dense (B,B)
+        # affinity on the HOST — 10 GB at B=50k, 160 GB at B=200k — regardless of
+        # --no-cluster, which previously applied to the real run only.
         warm = dict(P)
         warm["max_iters"] = 3
         run_one(args.version, warm, args.missing, device,
-                rank_pseudo=args.rank_pseudo, verbose=False)
+                rank_pseudo=args.rank_pseudo, verbose=False, skip_cluster=True)
     r = run_one(args.version, P, args.missing, device,
                 rank_pseudo=args.rank_pseudo, skip_cluster=args.no_cluster)
     r["seed"] = args.seed
