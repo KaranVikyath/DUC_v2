@@ -7,8 +7,10 @@ Generate an HTCondor DAG for the DUC v1-vs-v3 experiments.
 
 Experiment groups
   syn    synthetic 200x50 exactly as published: v1 vs v3, 10-90% missing, 5 seeds
-  real   ORL, COIL20, COIL100, EYaleB, Flowers, OxfordPet. v1 is queued ONLY for
-         ORL, because it is the only one whose (F, B, B) weight fits on a GPU.
+  real   ORL, COIL20, COIL100, EYaleB, Flowers, OxfordPet — all for v3. v1 runs
+         on ORL (large tier) and COIL20/EYaleB (xlarge: 80+ GB cards), paired
+         with v3 on the same tier so timing is same-hardware. COIL100/Flowers/
+         OxfordPet need 1-4 TB for v1 and are reported as infeasible.
   rank   v3 pseudo-rank sweep per dataset
   scale  synthetic scaling to B=200k, completion only
   all    everything above
@@ -33,7 +35,12 @@ DATASETS = {
     "OxfordPet": (7349, 3072, 111, 3090.6, "large", True),
     "Flowers": (8189, 3072,  204, 3837.4, "large", True),
 }
-V1_GPU_LIMIT_GB = 20.0          # largest single-GPU allocation we will request
+# v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
+# fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
+V1_LARGE_GB = 20.0              # fits a 24-46 GB card (ORL: 3.1 GB)
+V1_XLARGE_GB = 70.0             # needs an 80-96 GB card (COIL20 39.6, EYaleB 61.5)
+# Datasets v1 is asked to run on. Everything else is v3-only.
+V1_DATASETS = ("ORL", "COIL20", "EYaleB")
 # Past ~20k samples the dense (B,B) coefficient matrix is a host-side problem
 # (149 GB at B=200k), so clustering is skipped and only completion is reported.
 CLUSTER_LIMIT = 20000
@@ -64,7 +71,7 @@ def host_mem_gb(B, F, clustering):
     B=10k — which overran an 8 GB request. Everything else is a dozen or so
     float64 (B,F) copies plus the torch/CUDA context.
     """
-    base = 8.0                                   # torch + CUDA context + model
+    base = 6.0                    # torch + CUDA context + libs + model, with slack
     dense = 56.0 * B * B / 1e9 if clustering else 0.0
     arrays = 12.0 * B * F * 8 / 1e9
     return int(math.ceil(base + dense + arrays))
@@ -74,11 +81,15 @@ def jobs_for(exp):
     out = []
 
     def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-",
-            B=200, F=50):
+            B=200, F=50, v1gb=0.0):
         mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
-        # Pick the submit file from what the job actually needs, rather than
-        # guessing, and pass the exact figure through as req_mem.
-        sub = "large" if (mem > 8 or sub == "large") else "small"
+        if version == "v1" and v1gb > V1_LARGE_GB:
+            # (F,B,B) is built on the host first, so host RAM must cover it too.
+            sub = "xlarge"
+            mem = max(mem, int(math.ceil(v1gb * 1.5)))
+        elif sub != "xlarge":
+            # Pick the submit file from what the job actually needs.
+            sub = "large" if (mem > 8 or sub == "large") else "small"
         out.append(dict(name=name, sub=sub, version=version, dataset=dataset,
                         bsize=bsize, missing=missing, seed=seed, rankpseudo=rp,
                         extra=extra, req_mem=f"{mem}GB"))
@@ -99,12 +110,19 @@ def jobs_for(exp):
                 for m in MISSING:
                     add(f"real_v3_{ds}_m{int(m*100)}_s{s}", sub, "v3",
                         ds, "-", m, s, 1, extra, B=B, F=F)
-            if v1gb <= V1_GPU_LIMIT_GB:
-                # ORL only. ~1.3 s/iter, so keep the v1 grid deliberately small.
+            if ds in V1_DATASETS and v1gb <= V1_XLARGE_GB:
+                # v1 is slow (ORL ~1.3 s/iter; COIL20/EYaleB ~13x that), so it
+                # gets a reduced grid. The v3 jobs at the SAME (missing, seed)
+                # are queued on the SAME submit file so the timing comparison is
+                # same-hardware — a v1 on an H100 against a v3 on a 3060 would
+                # understate v3 by the hardware gap.
+                tier = "xlarge" if v1gb > V1_LARGE_GB else "large"
                 for s in SEEDS[:3]:
                     for m in (0.3, 0.5, 0.7):
-                        add(f"real_v1_{ds}_m{int(m*100)}_s{s}", "large", "v1",
-                            ds, "-", m, s, 10, B=B, F=F)
+                        add(f"real_v1_{ds}_m{int(m*100)}_s{s}", tier, "v1",
+                            ds, "-", m, s, 10, B=B, F=F, v1gb=v1gb)
+                        add(f"pair_v3_{ds}_m{int(m*100)}_s{s}", tier, "v3",
+                            ds, "-", m, s, 1, extra, B=B, F=F)
 
     if exp in ("rank", "all"):
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
@@ -143,7 +161,10 @@ def main():
     print("# v1's pseudo-completion weight is (F, B, B); it is queued only where")
     print("# 5*F*B^2*4 bytes fits one GPU:")
     for ds, (B, F, rank, v1gb, sub, clu) in sorted(DATASETS.items()):
-        ok = "QUEUED" if v1gb <= V1_GPU_LIMIT_GB else "infeasible"
+        if ds not in V1_DATASETS or v1gb > V1_XLARGE_GB:
+            ok = "infeasible" if v1gb > V1_XLARGE_GB else "not requested"
+        else:
+            ok = "QUEUED (xlarge, 80+ GB card)" if v1gb > V1_LARGE_GB else "QUEUED"
         print(f"#   {ds:<10} B={B:<5} F={F:<5} v1 needs {v1gb:>8.1f} GB   {ok}")
     print(f"#\n# Run: condor_submit_dag chtc/dag/{args.exp}.dag\n")
 

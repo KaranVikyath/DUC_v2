@@ -1,0 +1,41 @@
+# GPU XLarge — v1 on COIL20 (39.6 GB) and EYaleB (61.5 GB), plus the v3 runs
+# paired with them for a same-hardware timing comparison.
+#
+# v1's pseudo-completion weight is (F, B, B) and is CONSTRUCTED ON THE HOST as
+# F separate nn.Linear layers before .to(device), so host memory must exceed
+# the device figure too. These only fit CHTC's 80-96 GB cards (H100, H200,
+# RTX PRO 6000) and will queue until one frees up — expect hours, not minutes.
+
+universe = container
+container_image = docker://$(image_name)
+
+executable = chtc/scripts/run_experiment.sh
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+
+transfer_input_files = $(inputs)
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = results.tar.gz
+transfer_output_remaps = "results.tar.gz = tars/results_$(Cluster)_$(Process).tar.gz"
+
+request_gpus = 1
+gpus_minimum_capability = $(gpu_cap_min:8.0)
+gpus_maximum_capability = $(gpu_cap_max:12.0)
+gpus_minimum_memory     = $(gpu_mem:80000)
++WantGPULab   = true
+# v1 at B=1440 is roughly 13x the work of ORL's 1.3 s/iter; allow a long run.
++GPUJobLength = "long"
+
+request_cpus   = 4
+request_memory = $(req_mem:96GB)
+request_disk   = $(req_disk:20GB)
+
+output = logs/$(Cluster).$(Process).out
+error  = logs/$(Cluster).$(Process).err
+log    = logs/$(Cluster).$(Process).log
+
+requirements = (Machine =!= LastRemoteHost) && (Machine != "$(bad_node:no.such.host)")
+
+max_retries = 5
+
+queue
