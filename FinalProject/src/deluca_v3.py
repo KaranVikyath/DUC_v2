@@ -262,22 +262,30 @@ class EfficientCFSModule(nn.Module):
     the eigenvalues are kept, and V is reconstructed on demand for clustering.
     """
 
-    def __init__(self, rank, svd_niter=2, backend="gram", eigh_device="cpu"):
+    # Measured crossover for torch.linalg.eigh on an (n x n) Gram, RTX 3060:
+    # CPU wins 8x at n=40 and 1.4x at n=512; GPU wins 2.3x at n=900 and 7.3x
+    # at n=3840. Below this size the launch/setup cost of cuSOLVER dominates.
+    EIGH_CPU_MAX = 512
+
+    def __init__(self, rank, svd_niter=2, backend="gram", eigh_device="auto"):
         super().__init__()
         if backend not in ("gram", "lowrank", "cusolver"):
             raise ValueError(f"unknown cfs backend: {backend}")
-        if eigh_device not in ("cpu", "gpu"):
+        if eigh_device not in ("auto", "cpu", "gpu"):
             raise ValueError(f"unknown eigh_device: {eigh_device}")
         self.rank = rank
         self.svd_niter = svd_niter
         self.backend = backend
         self.eigh_device = eigh_device
-        self._ZU = None      # (B, rank) = Z @ U_r
-        self._lam = None     # (rank,)   top eigenvalues of G
-        self._V = None       # (B, rank) only for the lowrank/cusolver backends
+        self._ZU = None      # (B, rank) = Z @ U_r      (F_enc-space path)
+        self._lam = None     # (rank,)   top eigenvalues (F_enc-space path)
+        self._V = None       # (B, rank) V_rank directly (B-space / other backends)
 
     def _eigh(self, G):
-        if self.eigh_device == "cpu" and G.is_cuda:
+        n = G.shape[0]
+        use_cpu = (self.eigh_device == "cpu"
+                   or (self.eigh_device == "auto" and n <= self.EIGH_CPU_MAX))
+        if use_cpu and G.is_cuda:
             w, U = torch.linalg.eigh(G.cpu())
             return w.to(G.device), U.to(G.device)
         return torch.linalg.eigh(G)
@@ -285,15 +293,33 @@ class EfficientCFSModule(nn.Module):
     def forward(self, Z):
         # Z: (B, F_enc)
         if self.backend == "gram":
-            r = min(self.rank, Z.shape[1])
-            G = Z.t() @ Z                       # (F_enc, F_enc)
-            w, U = self._eigh(G)                # ascending eigenvalues
-            Ur = U[:, -r:]                      # top-r eigenvectors
-            ZU = Z @ Ur                         # (B, r)
-            PZ = ZU @ Ur.t()                    # = Z U_r U_r^T — no (B,B), no (B,rank) factor
-            self._ZU = ZU.detach()
-            self._lam = w[-r:].detach().clamp_min(1e-12)
-            self._V = None
+            B, Fe = Z.shape
+            r = min(self.rank, Fe, B)
+            if Fe <= B:
+                # Small latent, many samples (telemetry, synthetic): work in
+                # F_enc-space so nothing here scales with B.
+                G = Z.t() @ Z                   # (F_enc, F_enc)
+                w, U = self._eigh(G)            # ascending eigenvalues
+                Ur = U[:, -r:]                  # top-r eigenvectors
+                ZU = Z @ Ur                     # (B, r)
+                PZ = ZU @ Ur.t()                # = Z U_r U_r^T
+                self._ZU = ZU.detach()
+                self._lam = w[-r:].detach().clamp_min(1e-12)
+                self._V = None
+            else:
+                # Large latent, fewer samples (COIL20's single conv leaves 3840
+                # dims for 1440 images): an (F_enc, F_enc) Gram would cost
+                # O(F_enc^3) per step — 4.5 s at 3840. The (B, B) Gram is the
+                # smaller matrix here, and since B < F_enc it is never larger
+                # than Z itself, so this cannot reintroduce the B**2 problem
+                # at scale. Its top eigenvectors are V_rank directly.
+                G = Z @ Z.t()                   # (B, B), B < F_enc
+                w, V = self._eigh(G)
+                Vr = V[:, -r:]                  # (B, r) = V_rank
+                PZ = Vr @ (Vr.t() @ Z)
+                self._V = Vr.detach()
+                self._ZU = None
+                self._lam = None
             return PZ, None
 
         if self.backend == "cusolver" and Z.is_cuda and _load_cfs_cuda() is not None:

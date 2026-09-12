@@ -72,8 +72,22 @@ def thrC(C, ro):
 
 def post_proC(C, K, d, alpha):
     C = 0.5 * (C + C.T)
-    r = min(d*K + 1, C.shape[0]-1) 
-    U, S, _ = svds(C, r, v0=np.ones(C.shape[0]))
+    r = min(d*K + 1, C.shape[0]-1)
+    try:
+        U, S, _ = svds(C, r, v0=np.ones(C.shape[0]))
+    except Exception:
+        # ARPACK asks for d*K+1 components of a matrix whose rank is exactly
+        # d*K (C = V V^T), so the last one is a zero singular value it cannot
+        # converge on. It succeeds on some inputs (ORL, EYaleB) and throws
+        # ArpackError on others (COIL20, COIL100, OxfordPet). C is symmetric
+        # PSD, so a dense eigendecomposition gives the same top-r factors
+        # exactly; it costs ~1 min at N=8k and is only reached on failure.
+        w, V = np.linalg.eigh(C)
+        idx = np.argsort(w)[::-1][:r]
+        U = V[:, idx]
+        S = np.clip(w[idx], 0.0, None)
+        # svds returns ascending; match that so the reversal below is uniform.
+        U, S = U[:, ::-1], S[::-1]
     U = U[:, ::-1]
     S = np.sqrt(S[::-1])
     S = np.diag(S)
