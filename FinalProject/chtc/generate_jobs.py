@@ -170,6 +170,12 @@ def main():
     ap.add_argument("--data-dir", default="$ENV(HOME)/duc_data",
                     help="where the .mat files live on the submit node")
     ap.add_argument("--retry", type=int, default=2)
+    ap.add_argument("--gpu-model", default=None,
+                    help="pin small/large tiers to this DeviceName (default: the "
+                         "submit file's, NVIDIA L40S). Use the exact string from "
+                         "condor_status -af GPUs_DeviceName.")
+    ap.add_argument("--gpu-model-xlarge", default=None,
+                    help="pin the xlarge tier (default: NVIDIA A100-SXM4-80GB)")
     args = ap.parse_args()
 
     js = jobs_for(args.exp)
@@ -177,6 +183,8 @@ def main():
     print(f"# ===== DUC v1-vs-v3 DAG — group '{args.exp}' =====")
     print(f"# {len(js)} jobs ({n_v1} v1, {len(js)-n_v1} v3)")
     print(f"# image {args.image} | datasets {args.data_dir}")
+    print(f"# gpu: small/large -> {args.gpu_model or 'submit-file default (NVIDIA L40S)'}"
+          f" | xlarge -> {args.gpu_model_xlarge or 'submit-file default (NVIDIA A100-SXM4-80GB)'}")
     print("#")
     print("# v1's pseudo-completion weight is (F, B, B); it is queued only where")
     print("# 5*F*B^2*4 bytes fits one GPU:")
@@ -199,7 +207,9 @@ def main():
               f"bsize=\"{j['bsize']}\" missing=\"{j['missing']}\" seed=\"{j['seed']}\" "
               f"rankpseudo=\"{j['rankpseudo']}\" extra_args=\"{j['extra']}\" "
               f"image_name=\"{args.image}\" inputs=\"{inputs}\" "
-              f"req_mem=\"{j['req_mem']}\"")
+              f"req_mem=\"{j['req_mem']}\""
+              + (f" gpu_model=\"{gm}\"" if (gm := (args.gpu_model_xlarge if j["sub"] == "xlarge"
+                                                   else args.gpu_model)) else ""))
         print(f"RETRY {j['name']} {args.retry}\n")
 
 

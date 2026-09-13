@@ -107,18 +107,33 @@ Per-iteration time and peak VRAM are only comparable across methods when every
 job in a table ran on the **same card model**. On a shared cluster that means
 pinning one, so each submit file carries a `require_gpus` expression:
 
-| tier | default `gpu_model` | jobs |
-|---|---|---|
-| `gpu_small` / `gpu_large` | `NVIDIA L40S` (46 GB) | all v3, all baselines, v1 on ORL |
-| `gpu_xlarge` | `NVIDIA RTX PRO 6000 Blackwell Server Edition` (96 GB) | v1 on COIL20/EYaleB + their paired v3 |
+| tier | default `gpu_model` | CHTC has | jobs |
+|---|---|---|---|
+| `gpu_small` / `gpu_large` | `NVIDIA L40S` (46 GB) | 13 | all v3, all baselines, v1 on ORL |
+| `gpu_xlarge` | `NVIDIA A100-SXM4-80GB` | 11 | v1 on COIL20/EYaleB + their paired v3 |
+
+(There is also a single RTX PRO 6000 and 6 H200s; do not pin the lone card —
+36 jobs through one GPU is days.)
 
 Two consequences:
 
 - **Everything in the main tables runs on the L40S**, including the classical
   baselines (they are on the GPU queue precisely for this reason, not a CPU one).
-- COIL20/EYaleB v1 cannot fit a 46 GB card, so those pairs run on the 96 GB
+- COIL20/EYaleB v1 cannot fit a 46 GB card, so those pairs run on the A100-80GB
   tier — same-card *within* the pair, but not on the same card as the rest.
   Report them as a separate row group.
+
+**Or put the whole paper on one card.** The A100-80GB pool (11 cards) can take
+every job, which makes every table same-hardware with no separate row group:
+
+```bash
+python chtc/generate_jobs.py --exp main --gpu-model "NVIDIA A100-SXM4-80GB" > chtc/dag/main.dag
+python chtc/generate_jobs.py --exp base --gpu-model "NVIDIA A100-SXM4-80GB" > chtc/dag/base.dag
+```
+
+`--gpu-model` sets the small/large tiers; `--gpu-model-xlarge` the xlarge one.
+Trade-off: 11 cards instead of 13, and A100s are popular, so expect a longer
+queue for a cleaner paper.
 
 Every shard records `torch.cuda.get_device_name()`. `--aggregate` prints the
 set of devices seen and marks any row whose seeds landed on different cards
