@@ -17,11 +17,14 @@ transfer_output_files = results.tar.gz
 transfer_output_remaps = "results.tar.gz = tars/results_$(Cluster)_$(Process).tar.gz"
 
 request_gpus = 1
-# Floor sm_7.5 (torch 2.7 dropped older); ceiling is open so Blackwell nodes
-# are usable — the cu12.8 image has kernels for them.
-gpus_minimum_capability = $(gpu_cap_min:7.5)
-gpus_maximum_capability = $(gpu_cap_max:12.0)
-gpus_minimum_memory     = $(gpu_mem:8000)
+# SAME-GPU RULE. Per-iteration time and peak VRAM are only comparable across
+# methods when every job ran on the same card model, so this tier pins one.
+# Default is the L40S (46 GB, plentiful on CHTC, and what the smoke test got).
+# Find the exact strings CHTC advertises with:
+#   condor_status -compact -constraint 'GPUs > 0' -af GPUs_DeviceName | sort | uniq -c
+# Override per DAG with gpu_model="..." in VARS. Every shard records
+# torch.cuda.get_device_name(), and --aggregate flags any mixed-GPU group.
+require_gpus = (DeviceName == "$(gpu_model:NVIDIA L40S)") && (GlobalMemoryMb >= $(gpu_mem_min:40000)) && (Capability >= $(gpu_cap_min:7.5)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
 +GPUJobLength = "short"
 

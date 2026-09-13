@@ -14,8 +14,9 @@ Experiment groups
   rank   v3 pseudo-rank sweep per dataset
   scale  synthetic scaling to B=200k, completion only
   base   classical completion baselines (mean/svd_impute/soft_impute/knn/mice)
-         on every dataset, CPU queue. Same masks and metrics as v3, so the
-         rows land in the same aggregate table.
+         on every dataset, one job per config on the same L40S tier as v3 so
+         time/VRAM are same-hardware. Same masks and metrics; rows land in the
+         same aggregate table.
   all    everything above
 """
 
@@ -48,16 +49,6 @@ V1_DATASETS = ("ORL", "COIL20", "EYaleB")
 # (149 GB at B=200k), so clustering is skipped and only completion is reported.
 CLUSTER_LIMIT = 20000
 
-# Classical baselines and their size caps (mirrors baselines.BASELINES). Capped
-# jobs are simply not queued rather than submitted to exit immediately.
-BASELINES = {
-    #  name          max_B   max_F
-    "mean":        (None,   None),
-    "svd_impute":  (None,   None),
-    "soft_impute": (None,   None),
-    "knn":         (3000,   None),      # O(B^2 F)
-    "mice":        (None,   128),       # one regressor per feature per round
-}
 
 
 # Each job needs exactly ONE dataset file, and the largest is 44 MB — inside
@@ -147,23 +138,19 @@ def jobs_for(exp):
                         rp, extra, B=B, F=F)
 
     if exp in ("base", "all"):
+        # One "allbase" job per (dataset, missing, seed): the runner executes
+        # every size-applicable baseline back-to-back and writes one shard each.
+        # 315 jobs instead of 1170, and the container start-up is paid once.
+        # These go on the SAME L40S tier as v3 so time and peak VRAM are
+        # same-hardware — a CPU queue would make neither comparable.
         targets = [("synthetic", 200, 50)] + [(ds, v[0], v[1]) for ds, v in DATASETS.items()]
         for ds, B, F in targets:
             extra = "-" if B <= CLUSTER_LIMIT else "--no-cluster"
-            for name, (max_B, max_F) in BASELINES.items():
-                if (max_B and B > max_B) or (max_F and F > max_F):
-                    continue
-                for s in SEEDS:
-                    for m in MISSING:
-                        bs = 200 if ds == "synthetic" else "-"
-                        # Baseline memory is a few (B,F) float64 copies plus the
-                        # clustering (B,B) — no torch context, so a lower base.
-                        mem = int(math.ceil(2.0 + (56.0 * B * B / 1e9 if extra == "-" else 0)
-                                            + 12.0 * B * F * 8 / 1e9))
-                        out.append(dict(name=f"base_{name}_{ds}_m{int(m*100)}_s{s}",
-                                        sub="cpu", version=name, dataset=ds,
-                                        bsize=bs, missing=m, seed=s, rankpseudo=0,
-                                        extra=extra, req_mem=f"{max(mem, 4)}GB"))
+            for s in SEEDS:
+                for m in MISSING:
+                    add(f"base_{ds}_m{int(m*100)}_s{s}", "small", "allbase",
+                        ds, 200 if ds == "synthetic" else "-", m, s, 0, extra,
+                        B=B, F=F)
 
     if exp in ("scale", "all"):
         for B in (10000, 25000, 50000, 100000, 200000):
@@ -202,8 +189,7 @@ def main():
     print(f"#\n# Run: condor_submit_dag chtc/dag/{args.exp}.dag\n")
 
     for j in js:
-        sub = ("chtc/submit/cpu.sub" if j["sub"] == "cpu"
-               else f"chtc/submit/gpu_{j['sub']}.sub")
+        sub = f"chtc/submit/gpu_{j['sub']}.sub"
         mf = MATFILE.get(j["dataset"], "")
         # transfer_input_files is COMMA-separated. Build the whole list here so
         # synthetic jobs (no .mat) do not end up with a dangling comma.

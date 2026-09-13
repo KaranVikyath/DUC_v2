@@ -1251,19 +1251,31 @@ def single_run(args):
     if args.max_iters:
         P["max_iters"] = args.max_iters
 
+    gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
+
     if args.version not in ("v1", "v3"):
-        # Classical baseline: same masks/metrics, no warmup, no training loop.
-        r = run_baseline_one(args.version, P, args.missing, seed=args.seed,
-                             skip_cluster=args.no_cluster)
-        if r is None:
-            raise SystemExit(0)              # capped out by size — not an error
-        out = args.out or os.path.join(
-            _DATA, "shards",
-            f"{args.dataset}_{args.version}_m{int(args.missing*100)}_s{args.seed}.json")
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        with open(out, "w") as f:
-            json.dump(r, f, indent=2)
-        print(f"wrote {out}")
+        # Classical baselines: same masks/metrics, no warmup, no training loop.
+        # "allbase" runs every applicable one back-to-back in this process so
+        # the container start-up cost is paid once per config, not per method.
+        from baselines import BASELINES
+        names = list(BASELINES) if args.version == "allbase" else [args.version]
+        out_dir = os.path.dirname(args.out) if args.out else os.path.join(_DATA, "shards")
+        os.makedirs(out_dir, exist_ok=True)
+        wrote = 0
+        for name in names:
+            r = run_baseline_one(name, P, args.missing, seed=args.seed,
+                                 skip_cluster=args.no_cluster)
+            if r is None:
+                continue                     # capped out by size — not an error
+            r["device"] = gpu_name
+            out = os.path.join(out_dir,
+                               f"{args.dataset}_{name}_m{int(args.missing*100)}_s{args.seed}.json")
+            with open(out, "w") as f:
+                json.dump(r, f, indent=2)
+            print(f"wrote {out}")
+            wrote += 1
+        if wrote == 0:
+            print("no baseline applicable at this size")
         return
 
     if device.type == "cuda":
@@ -1278,7 +1290,7 @@ def single_run(args):
     r = run_one(args.version, P, args.missing, device,
                 rank_pseudo=args.rank_pseudo, skip_cluster=args.no_cluster)
     r["seed"] = args.seed
-    r["device"] = (torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu")
+    r["device"] = gpu_name
     out = args.out or os.path.join(
         _DATA, "shards",
         f"{args.dataset}_{args.version}_rp{args.rank_pseudo}_"
@@ -1312,9 +1324,16 @@ def aggregate(pattern):
     # back before scoring and is not comparable across methods (it is NaN for
     # baselines by design). NMAE is per-feature scaled so every feature counts
     # equally; compl* is held-out completion in original units.
+    # Same-hardware check: timing and VRAM are only comparable across methods
+    # if every job in the table ran on the same GPU model. Print the set of
+    # devices seen, and flag any group that mixes them.
+    devices = sorted({str(s.get("device", "?")) for s in shards})
+    print(f"  devices: {', '.join(devices)}"
+          + ("" if len(devices) == 1 else
+             "   <-- MIXED: time/VRAM are not comparable across rows on different GPUs"))
     hdr = (f"  {'dataset':<10} | {'method':<12} | {'Miss':>5} | {'n':>2} | "
            f"{'time(s)':>8} | {'peak MB':>8} | {'NMAE':>15} | "
-           f"{'compl*%':>15} | {'Clust%':>15}")
+           f"{'compl*%':>15} | {'Clust%':>15} | {'gpu':<4}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     last_ds = None
@@ -1332,10 +1351,12 @@ def aggregate(pattern):
         k_m, k_s = ms("cluster_acc")
         t_m, _ = ms("total_time_s")
         p_m, _ = ms("peak_train_mb")
+        devs = {str(x.get("device", "?")) for x in g}
+        dev_tag = "MIX!" if len(devs) > 1 else str(devices.index(next(iter(devs))))
         print(f"  {key[0]:<10} | {key[1]:<12} | {key[2]*100:>4.0f}% | {len(g):>2} | "
               f"{t_m:>8.1f} | {p_m:>8.1f} | "
               f"{n_m:>7.4f} +-{n_s:>6.4f} | {c_m:>7.2f} +-{c_s:>5.2f} | "
-              f"{k_m:>7.2f} +-{k_s:>5.2f}")
+              f"{k_m:>7.2f} +-{k_s:>5.2f} | {dev_tag:<4}")
 
 
 def main():
@@ -1347,9 +1368,10 @@ def main():
     ap.add_argument("--single", action="store_true", help="run one config (CHTC)")
     ap.add_argument("--aggregate", metavar="GLOB", help="merge shards into a table")
     ap.add_argument("--version", default="v3",
-                    choices=["v1", "v3", "mean", "svd_impute", "soft_impute",
-                             "knn", "mice"],
-                    help="v1/v3, or a classical baseline from baselines.py")
+                    choices=["v1", "v3", "allbase", "mean", "svd_impute",
+                             "soft_impute", "knn", "mice"],
+                    help="v1/v3, one classical baseline, or allbase = every "
+                         "applicable baseline in one job (one shard each)")
     ap.add_argument("--dataset", default="synthetic",
                     choices=["synthetic", "ORL", "COIL20", "COIL100", "EYaleB",
                              "Flowers", "OxfordPet", "HARUS", "DSDD"])
