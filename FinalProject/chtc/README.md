@@ -148,7 +148,7 @@ Check with the `condor_status` line above and override in the DAG VARS, e.g.
 ```bash
 mkdir -p results/shards
 for t in tars/results_*.tar.gz; do tar -xzf "$t" -C results/shards --strip-components=1; done
-python src/bench_v1_v3.py --aggregate "results/shards/*.json"
+python src/aggregate.py "results/shards/*.json"          # stdlib only — runs on the login node
 ```
 
 `--aggregate` groups by (dataset, version, missing rate) and reports mean ± std
