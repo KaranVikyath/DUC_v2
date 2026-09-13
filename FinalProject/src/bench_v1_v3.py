@@ -637,6 +637,87 @@ def print_extrapolation(F=50, rp=RANK_PSEUDO, rank=25):
     print(f"  projector P = V V^T is another {human(200_000**2*4/MB)}.")
 
 
+def run_baseline_one(name, P, missing_pct, seed=17, pattern="mcar",
+                     skip_cluster=False, verbose=True):
+    """Score one classical baseline with exactly the protocol run_one uses.
+
+    Same mask (same seed and pattern), same optional z-scoring from observed
+    entries only, same held-out-only metrics in original units, and the same
+    mean-imputation floor — so a baseline row and a v3 row in the same table
+    are directly comparable.
+    """
+    from baselines import run_baseline, cluster_completed
+    seed_all(seed)
+    if missing_pct <= 0:
+        missing = P["data"].copy()
+    elif pattern == "mcar":
+        missing = missing_data_generation(P["data"], int(missing_pct * P["total_dp"]))
+    else:
+        missing = make_missing(P["data"], missing_pct, pattern, seed)
+    full_raw = P["full_data"]
+    missing_raw = missing
+
+    mu, sd = 0.0, 1.0
+    if P.get("normalize"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            mu = np.nanmean(missing, axis=0, keepdims=True)
+            sd = np.nanstd(missing, axis=0, keepdims=True)
+        mu = np.where(np.isfinite(mu), mu, 0.0)
+        sd = np.where(np.isfinite(sd) & (sd >= 1e-8), sd, 1.0)
+        missing = (missing - mu) / sd
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
+        base_alloc = torch.cuda.memory_allocated()
+    X_hat, took = run_baseline(name, missing, rank=P["rank"])
+    if X_hat is None:
+        if verbose:
+            print(f"  {P['name']:<9} {name:<12} miss={missing_pct*100:>3.0f}%  skipped: {took}")
+        return None
+    peak_mb = ((torch.cuda.max_memory_allocated() - base_alloc) / MB
+               if torch.cuda.is_available() else 0.0)
+
+    pred_raw = X_hat * sd + mu
+    obs = ~np.isnan(missing_raw)
+    unobs = ~obs
+    err_r = pred_raw[unobs] - full_raw[unobs]
+    mae_raw = float(np.mean(np.abs(err_r)))
+    ref_r = float(np.linalg.norm(full_raw[unobs]))
+    compl_raw = (1 - float(np.linalg.norm(err_r)) / ref_r) * 100 if ref_r > 0 else float("nan")
+    Bn = P["batch_size"]
+    sd_f = np.nanstd(missing_raw.reshape(Bn, -1), axis=0)
+    sd_f = np.where((sd_f < 1e-8) | ~np.isfinite(sd_f), 1.0, sd_f)
+    sd_full = np.broadcast_to(sd_f, (Bn, sd_f.size)).reshape(full_raw.shape)
+    nmae = float(np.mean(np.abs(err_r) / sd_full[unobs]))
+
+    cluster_acc, clu_s = float("nan"), 0.0
+    if not skip_cluster and P.get("true_labels") is not None and P["K"] > 1:
+        t0 = time.perf_counter()
+        try:
+            y = cluster_completed(pred_raw, P["K"], seed=seed)
+            cluster_acc = (1 - err_rate(P["true_labels"], y)) * 100
+        except Exception as e:
+            print(f"    [baseline clustering failed: {type(e).__name__}]")
+        clu_s = time.perf_counter() - t0
+
+    res = dict(dataset=P["name"], version="baseline", tag=name, baseline=name,
+               missing_pct=missing_pct, seed=seed, pattern=pattern,
+               rank_pseudo=None, iterations=0, hit_cap=False,
+               total_time_s=took, avg_iter_ms=float("nan"),
+               peak_train_mb=peak_mb, avg_vram_mb=peak_mb,
+               mae_unobs_raw=mae_raw, nmae_unobs=nmae, mae_unobs=nmae,
+               completion_unobs_raw=compl_raw, completion_unobs=compl_raw,
+               completion_acc=float("nan"), cluster_acc=cluster_acc,
+               cluster_build_ms=clu_s * 1000, normalized=bool(P.get("normalize")),
+               B=Bn, rank=P["rank"])
+    if verbose:
+        print(f"  {P['name']:<9} {name:<12} miss={missing_pct*100:>3.0f}%  "
+              f"{took:>7.1f}s  peak={peak_mb:>7.1f}MB  NMAE={nmae:>8.4f}  "
+              f"compl*={compl_raw:>6.2f}%  clust={cluster_acc:>6.2f}%")
+    return res
+
+
 def warmup(device, P):
     """Allocate the one-time cuBLAS/cuSOLVER workspace before measuring.
 
@@ -1169,6 +1250,22 @@ def single_run(args):
     P = get_problem(args.dataset, B=args.B, F=args.F, seed=args.seed)
     if args.max_iters:
         P["max_iters"] = args.max_iters
+
+    if args.version not in ("v1", "v3"):
+        # Classical baseline: same masks/metrics, no warmup, no training loop.
+        r = run_baseline_one(args.version, P, args.missing, seed=args.seed,
+                             skip_cluster=args.no_cluster)
+        if r is None:
+            raise SystemExit(0)              # capped out by size — not an error
+        out = args.out or os.path.join(
+            _DATA, "shards",
+            f"{args.dataset}_{args.version}_m{int(args.missing*100)}_s{args.seed}.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as f:
+            json.dump(r, f, indent=2)
+        print(f"wrote {out}")
+        return
+
     if device.type == "cuda":
         # Warmup exists only to allocate the cuBLAS/cuSOLVER workspace before the
         # measured run. It must never cluster: that would build the dense (B,B)
@@ -1196,30 +1293,49 @@ def aggregate(pattern):
     """Merge per-job shards, averaging repeated seeds and reporting spread."""
     import glob
     from collections import defaultdict
-    shards = [json.load(open(p)) for p in glob.glob(pattern)]
+    shards = []
+    for p in glob.glob(pattern):
+        try:
+            d = json.load(open(p))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(d, dict) and {"dataset", "tag", "missing_pct"} <= d.keys():
+            shards.append(d)
     if not shards:
-        print(f"no shards matched {pattern}")
+        print(f"no result shards matched {pattern}")
         return
     groups = defaultdict(list)
     for s in shards:
         groups[(s["dataset"], s["tag"], s["missing_pct"])].append(s)
 
-    hdr = (f"  {'dataset':<10} | {'version':<14} | {'Miss':>5} | {'n':>2} | "
-           f"{'ms/iter':>8} | {'PeakVRAM':>9} | {'Compl%':>15} | {'Clust%':>15}")
+    # Held-out metrics only. The legacy completion_acc pasted observed entries
+    # back before scoring and is not comparable across methods (it is NaN for
+    # baselines by design). NMAE is per-feature scaled so every feature counts
+    # equally; compl* is held-out completion in original units.
+    hdr = (f"  {'dataset':<10} | {'method':<12} | {'Miss':>5} | {'n':>2} | "
+           f"{'time(s)':>8} | {'peak MB':>8} | {'NMAE':>15} | "
+           f"{'compl*%':>15} | {'Clust%':>15}")
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
-    for key in sorted(groups):
+    last_ds = None
+    for key in sorted(groups, key=lambda k: (k[0], k[2], k[1])):
         g = groups[key]
+        if last_ds not in (None, key[0]):
+            print("  " + "-" * (len(hdr) - 2))
+        last_ds = key[0]
         def ms(f):
-            v = np.array([x[f] for x in g], dtype=float)
+            v = np.array([x.get(f, np.nan) for x in g], dtype=float)
             v = v[~np.isnan(v)]
             return (np.mean(v), np.std(v)) if len(v) else (float("nan"),) * 2
-        c_m, c_s = ms("completion_acc")
+        n_m, n_s = ms("nmae_unobs")
+        c_m, c_s = ms("completion_unobs_raw")
         k_m, k_s = ms("cluster_acc")
-        print(f"  {key[0]:<10} | {key[1]:<14} | {key[2]*100:>4.0f}% | {len(g):>2} | "
-              f"{np.mean([x['avg_iter_ms'] for x in g]):>8.2f} | "
-              f"{np.mean([x['peak_train_mb'] for x in g]):>7.1f}MB | "
-              f"{c_m:>7.2f} +-{c_s:>5.2f} | {k_m:>7.2f} +-{k_s:>5.2f}")
+        t_m, _ = ms("total_time_s")
+        p_m, _ = ms("peak_train_mb")
+        print(f"  {key[0]:<10} | {key[1]:<12} | {key[2]*100:>4.0f}% | {len(g):>2} | "
+              f"{t_m:>8.1f} | {p_m:>8.1f} | "
+              f"{n_m:>7.4f} +-{n_s:>6.4f} | {c_m:>7.2f} +-{c_s:>5.2f} | "
+              f"{k_m:>7.2f} +-{k_s:>5.2f}")
 
 
 def main():
@@ -1230,7 +1346,10 @@ def main():
                     help="keep saved rows and skip configurations already run")
     ap.add_argument("--single", action="store_true", help="run one config (CHTC)")
     ap.add_argument("--aggregate", metavar="GLOB", help="merge shards into a table")
-    ap.add_argument("--version", default="v3", choices=["v1", "v3"])
+    ap.add_argument("--version", default="v3",
+                    choices=["v1", "v3", "mean", "svd_impute", "soft_impute",
+                             "knn", "mice"],
+                    help="v1/v3, or a classical baseline from baselines.py")
     ap.add_argument("--dataset", default="synthetic",
                     choices=["synthetic", "ORL", "COIL20", "COIL100", "EYaleB",
                              "Flowers", "OxfordPet", "HARUS", "DSDD"])

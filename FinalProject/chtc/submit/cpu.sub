@@ -1,0 +1,32 @@
+# CPU — classical completion baselines (mean / svd_impute / soft_impute / knn / mice).
+#
+# None of these need a GPU: the SVD-based ones use torch.svd_lowrank which runs
+# on CPU in seconds at these sizes, and the sklearn ones are CPU-only. CHTC has
+# far more CPU slots than GPU slots, so keeping baselines off the GPU queue
+# lets the 1000+ baseline jobs run alongside the v3 sweep instead of behind it.
+
+universe = container
+container_image = docker://$(image_name)
+
+executable = chtc/scripts/run_experiment.sh
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+
+transfer_input_files = $(inputs)
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = results.tar.gz
+transfer_output_remaps = "results.tar.gz = tars/results_$(Cluster)_$(Process).tar.gz"
+
+request_cpus   = $(req_cpus:4)
+request_memory = $(req_mem:8GB)
+request_disk   = $(req_disk:10GB)
+
+output = logs/$(Cluster).$(Process).out
+error  = logs/$(Cluster).$(Process).err
+log    = logs/$(Cluster).$(Process).log
+
+requirements = (Machine =!= LastRemoteHost) && (Machine != "$(bad_node:no.such.host)")
+
+max_retries = 5
+
+queue
