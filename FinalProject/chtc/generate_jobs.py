@@ -89,9 +89,12 @@ def jobs_for(exp):
             B=200, F=50, v1gb=0.0):
         mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
         if version == "v1" and v1gb > V1_LARGE_GB:
-            # (F,B,B) is built on the host first, so host RAM must cover it too.
+            # v1 builds its (F,B,B) PARAMETERS on the host before .to(device);
+            # gradients and Adam state are allocated on the GPU afterwards. So
+            # the host needs ~1/5 of the GPU figure (params only), not all of
+            # it — the earlier 1.5x-of-GPU request (60-93 GB) matched no slot.
             sub = "xlarge"
-            mem = max(mem, int(math.ceil(v1gb * 1.5)))
+            mem = max(mem, int(math.ceil(v1gb / 5.0 * 1.5 + 6)))
         elif sub != "xlarge":
             # Pick the submit file from what the job actually needs.
             sub = "large" if (mem > 8 or sub == "large") else "small"

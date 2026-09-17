@@ -489,10 +489,10 @@ class DeLUCAV3(nn.Module):
         x = self._to_device(x)
         Xc = self.pseudo(x)
         Z = self.encoder(Xc)
-        Z_flat = Z.view(self.batch_size, -1)
+        Z_flat = Z.reshape(self.batch_size, -1)   # encoder output is a permute -> may be non-contiguous; .view would fail
 
         PZ, _V = self.CFS_module(Z_flat)
-        PZ = PZ.view(Z.shape)
+        PZ = PZ.reshape(Z.shape)
         decoded = self.decoder(PZ)
 
         _ml_ext = _load_masked_loss_cuda()

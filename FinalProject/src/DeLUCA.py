@@ -251,14 +251,14 @@ class DeLUCA(nn.Module):
         x = torch.tensor(x).to(self.device)
         Xc = self.pseudo(x)
         Z = self.encoder(Xc)
-        Z_flat = Z.view(self.batch_size,-1)
+        Z_flat = Z.reshape(self.batch_size, -1)   # encoder output is a permute -> may be non-contiguous; .view would fail
 
         if self.cluster_model=="CFS":
             PZ, Coef = self.CFS_module(Z_flat)
         elif self.cluster_model=="SSC":
             PZ, Coef = self.self_expressive_module(Z_flat)
 
-        PZ = PZ.view(Z.shape)
+        PZ = PZ.reshape(Z.shape)
         decoded = self.decoder(PZ)
         
         # Step 6: fused masked-loss kernel (single pass, no intermediate tensors)
@@ -350,7 +350,7 @@ class PseudoCompletion(nn.Module):
         pos = torch.clamp(out, min=0)
         neg = self.prelu_weight * torch.clamp(out, max=0)
         out = pos + neg
-        return out.t().view(self.input_shape)
+        return out.t().reshape(self.input_shape)   # .t() is non-contiguous
 class Encoder(nn.Module):
     def __init__(self, input_shape, enc_layer_size,kernel_size):
         super(Encoder, self).__init__()
