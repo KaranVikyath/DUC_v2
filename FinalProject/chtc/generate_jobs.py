@@ -41,8 +41,12 @@ DATASETS = {
 }
 # v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
 # fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
-V1_LARGE_GB = 20.0              # fits a 24-46 GB card (ORL: 3.1 GB)
-V1_XLARGE_GB = 70.0             # needs an 80-96 GB card (COIL20 39.6, EYaleB 61.5)
+# The L40S has 46068 MiB. COIL20's 39.6 GB fits it (measured model runs at
+# 0.96-0.99x of prediction, so ~39 GB actual + ~1 GB CUDA context), which keeps
+# it on the same card as every other job in the paper. Only EYaleB (61.5 GB)
+# genuinely needs an 80+ GB card.
+V1_LARGE_GB = 42.0
+V1_XLARGE_GB = 70.0             # needs an 80+ GB card (EYaleB 61.5)
 # Datasets v1 is asked to run on. Everything else is v3-only.
 V1_DATASETS = ("ORL", "COIL20", "EYaleB")
 # Past ~20k samples the dense (B,B) coefficient matrix is a host-side problem
@@ -88,13 +92,15 @@ def jobs_for(exp):
     def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-",
             B=200, F=50, v1gb=0.0):
         mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
-        if version == "v1" and v1gb > V1_LARGE_GB:
+        if version == "v1":
             # v1 builds its (F,B,B) PARAMETERS on the host before .to(device);
             # gradients and Adam state are allocated on the GPU afterwards. So
-            # the host needs ~1/5 of the GPU figure (params only), not all of
-            # it — the earlier 1.5x-of-GPU request (60-93 GB) matched no slot.
-            sub = "xlarge"
+            # the host needs ~1/5 of the GPU figure (params only) — applies to
+            # every v1 job, not just the xlarge ones (COIL20 on the L40S still
+            # constructs 8.5 GB of nn.Linear weights on the host first).
             mem = max(mem, int(math.ceil(v1gb / 5.0 * 1.5 + 6)))
+        if version == "v1" and v1gb > V1_LARGE_GB:
+            sub = "xlarge"
         elif sub != "xlarge":
             # Pick the submit file from what the job actually needs.
             sub = "large" if (mem > 8 or sub == "large") else "small"

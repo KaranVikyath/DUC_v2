@@ -1,4 +1,4 @@
-# GPU XLarge — v1 on COIL20 (39.6 GB) and EYaleB (61.5 GB), plus the v3 runs
+# GPU XLarge — v1 on EYaleB (61.5 GB; COIL20 fits the L40S), plus the v3 runs
 # paired with them for a same-hardware timing comparison.
 #
 # v1's pseudo-completion PARAMETERS are constructed on the host as F separate
@@ -23,15 +23,15 @@ request_gpus = 1
 # SAME-GPU RULE. Per-iteration time and peak VRAM are only comparable across
 # methods when every job ran on the same card model, so this tier pins one.
 # This tier needs 80+ GB. CHTC (Sep 2026) advertises 11x A100-SXM4-80GB,
-# 6x H200 and a single RTX PRO 6000 — so the default is the A100-80GB pool;
-# pinning the lone RTX PRO 6000 would serialise 36 jobs through one card.
-# The MIG slice advertises a different DeviceName and is excluded by the
-# exact-string match.
+# 6x H200 and a single RTX PRO 6000. The A100 pin sat idle for 4 days without
+# matching a slot (GPU Lab membership or DeviceName string), so the default is
+# now the H200 pool. Check what a pinned card actually advertises with:
+#   condor_status -compact -constraint 'GPUs>0 && regexp("H200",GPUs_DeviceName)' -af Machine GPUs_DeviceName GPUs_GlobalMemoryMb Memory
 # Find the exact strings CHTC advertises with:
 #   condor_status -compact -constraint 'GPUs > 0' -af GPUs_DeviceName | sort | uniq -c
 # Override per DAG with gpu_model="..." in VARS. Every shard records
 # torch.cuda.get_device_name(), and --aggregate flags any mixed-GPU group.
-require_gpus = (DeviceName == "$(gpu_model:NVIDIA A100-SXM4-80GB)") && (GlobalMemoryMb >= $(gpu_mem_min:75000)) && (Capability >= $(gpu_cap_min:8.0)) && (Capability <= $(gpu_cap_max:12.0))
+require_gpus = (DeviceName == "$(gpu_model:NVIDIA H200)") && (GlobalMemoryMb >= $(gpu_mem_min:75000)) && (Capability >= $(gpu_cap_min:8.0)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
 # v1 at B=1440 is roughly 13x the work of ORL's 1.3 s/iter; allow a long run.
 +GPUJobLength = "long"
