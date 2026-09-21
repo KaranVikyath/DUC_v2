@@ -27,7 +27,11 @@ request_gpus = 1
 #   condor_status -compact -constraint 'GPUs > 0' -af GPUs_DeviceName | sort | uniq -c
 # Override per DAG with gpu_model="..." in VARS. Every shard records
 # torch.cuda.get_device_name(), and --aggregate flags any mixed-GPU group.
-require_gpus = (DeviceName == "$(gpu_model:NVIDIA L40S)") && (GlobalMemoryMb >= $(gpu_mem_min:40000)) && (Capability >= $(gpu_cap_min:7.5)) && (Capability <= $(gpu_cap_max:12.0))
+# gpu_model has NO inline default on purpose: HTCondor's $(name:default) parser
+# stops at whitespace, so "$(gpu_model:NVIDIA L40S)" was left UNEXPANDED and
+# compared literally — matching zero GPUs. generate_jobs.py always emits
+# gpu_model in the DAG VARS. Submitting this file by hand needs -a gpu_model=...
+require_gpus = (DeviceName == "$(gpu_model)") && (GlobalMemoryMb >= $(gpu_mem_min:40000)) && (Capability >= $(gpu_cap_min:7.5)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
 # v1 is ~1.3 s/iter on ORL and can run ~900 iterations, so leave headroom.
 +GPUJobLength = "medium"
