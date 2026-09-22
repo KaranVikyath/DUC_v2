@@ -1278,11 +1278,18 @@ def single_run(args):
             print("no baseline applicable at this size")
         return
 
-    if device.type == "cuda":
-        # Warmup exists only to allocate the cuBLAS/cuSOLVER workspace before the
-        # measured run. It must never cluster: that would build the dense (B,B)
-        # affinity on the HOST — 10 GB at B=50k, 160 GB at B=200k — regardless of
-        # --no-cluster, which previously applied to the real run only.
+    # Warmup exists only to allocate the cuBLAS/cuSOLVER workspace (~16 MB,
+    # cached per device) before the measured run, so the first run does not
+    # absorb its cost. Two things it must not do:
+    #   - cluster: that builds the dense (B,B) affinity on the HOST (10 GB at
+    #     B=50k) regardless of --no-cluster, which applies to the real run only.
+    #   - run for v1: v1 constructs its (F,B,B) weight as F separate nn.Linear
+    #     layers on the HOST before .to(device) — 13.2 GB for EYaleB. Freed
+    #     Python objects do not return memory to the OS, so the second
+    #     construction stacks on the first and the job is killed on RSS
+    #     (~26 GB against a 25.6 GB cap). v1 runs hundreds of slow iterations
+    #     anyway, so a 3-iteration warmup changes its timing by nothing.
+    if device.type == "cuda" and args.version != "v1":
         warm = dict(P)
         warm["max_iters"] = 3
         run_one(args.version, warm, args.missing, device,

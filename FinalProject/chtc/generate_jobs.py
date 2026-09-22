@@ -93,12 +93,17 @@ def jobs_for(exp):
             B=200, F=50, v1gb=0.0):
         mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
         if version == "v1":
-            # v1 builds its (F,B,B) PARAMETERS on the host before .to(device);
-            # gradients and Adam state are allocated on the GPU afterwards. So
-            # the host needs ~1/5 of the GPU figure (params only) — applies to
-            # every v1 job, not just the xlarge ones (COIL20 on the L40S still
-            # constructs 8.5 GB of nn.Linear weights on the host first).
-            mem = max(mem, int(math.ceil(v1gb / 5.0 * 1.5 + 6)))
+            # v1 builds its (F,B,B) PARAMETERS on the host as F separate
+            # nn.Linear layers before .to(device) — v1gb/5, i.e. 7.9 GB for
+            # COIL20 and 13.2 GB for EYaleB. Gradients and Adam state are
+            # allocated on the GPU afterwards.
+            #
+            # 2x that, not 1x: freed Python objects are not returned to the OS,
+            # and Docker's limit counts RSS, so transient copies accumulate.
+            # EYaleB was killed at 25.6 GB under a 1.5x rule while COIL20
+            # survived at 18 GB — consistent with ~2x params + overhead.
+            params_gb = v1gb / 5.0
+            mem = max(mem, int(math.ceil(params_gb * 2.0 + 8)))
         if version == "v1" and v1gb > V1_LARGE_GB:
             sub = "xlarge"
         elif sub != "xlarge":
