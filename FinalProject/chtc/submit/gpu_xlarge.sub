@@ -38,8 +38,11 @@ request_gpus = 1
 # gpu_model in the DAG VARS. Submitting this file by hand needs -a gpu_model=...
 require_gpus = (DeviceName == "$(gpu_model)") && (GlobalMemoryMb >= $(gpu_mem_min:75000)) && (Capability >= $(gpu_cap_min:8.0)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
-# v1 at B=1440 is roughly 13x the work of ORL's 1.3 s/iter; allow a long run.
-+GPUJobLength = "long"
+# "short" = up to 12 h, and the longest job here is ~75 min (COIL20 v1: 39 min
+# on an H200, EYaleB v1: ~73 min). GPU Lab caps concurrent jobs PER USER PER
+# LENGTH class, and the "long" cap (GPULAB_LONG.<user>:1) ran all 18 v1 jobs
+# on this tier one at a time — ~17 h of wall clock for ~17 GPU-hours of work.
++GPUJobLength = "short"
 
 request_cpus   = 4
 request_memory = $(req_mem:32GB)
