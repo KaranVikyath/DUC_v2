@@ -167,14 +167,23 @@ directory. Before that, a paired v3 overwrote the main v3 with the same
 | `--exp` | jobs | contents |
 |---|---|---|
 | `syn` | 90 | synthetic 200x50 as published — v1 vs v3, 9 rates x 5 seeds |
-| `real` | 324 | v3 on all six image sets; v1 on ORL/COIL20/EYaleB, each paired with a same-card v3 |
+| `real` | 414 | v3 on all eight real sets (images + HARUS/DSDD); v1 on ORL/COIL20/EYaleB, each paired with a same-card v3 |
 | `v1` | 27 | only the v1 half of `real` — can be queued before the v3 variant is decided |
 | `pair` | 27 | only the paired-v3 half of `real`, on the same tiers as `v1` |
-| **`base`** | **315** | mean / svd_impute / soft_impute / knn / mice on every dataset, same L40S tier |
-| `rank` | 72 | v3 pseudo-rank sweep per dataset |
+| **`best`** | **1215** | tuned v3 on every dataset: linear / CoLA-identity / CoLA-tanh at r_p=1, `--stop-factor 100 --max-iters 3000`, 9 rates x 5 seeds, L40S |
+| **`base`** | **405** | mean / svd_impute / soft_impute / knn / mice on every dataset, same L40S tier |
+| `rank` | 96 | v3 pseudo-rank sweep per dataset |
 | `scale` | 5 | synthetic to B=200k, completion only |
-| **`main`** | **414** | `syn` + `real` — the v1-vs-v3 tables |
-| `all` | 806 | everything |
+| **`main`** | **504** | `syn` + `real` — the v1-vs-v3 tables |
+| `all` | 2225 | everything |
+
+`--datasets A,B` keeps only the jobs on those datasets, e.g. queueing the
+baselines for newly added datasets without re-running the rest:
+`python chtc/generate_jobs.py --exp base --datasets HARUS,DSDD`.
+
+The v1-vs-v3 groups (`syn`, `real`, `v1`, `pair`) keep the published setup —
+linear pseudo-completion, stop at lr0/10 — so that comparison is exact. `best`
+applies everything the ablations found instead; report it separately.
 
 ## Why v1 is queued for three datasets only
 

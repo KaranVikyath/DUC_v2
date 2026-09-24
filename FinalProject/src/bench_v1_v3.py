@@ -242,6 +242,10 @@ def mat_problem(name, seed=17):
              true_labels=lab, max_iters=ORL_MAX_ITERS)
     P["f_enc"] = enc[-1]
     P["cfs_identity"] = rank >= P["f_enc"]
+    # Tabular features live on unrelated scales; without z-scoring the
+    # heterogeneous-scale study was 3381x worse. Statistics come from the
+    # observed entries only (run_one), and scoring is back in original units.
+    P["normalize"] = True
     return P
 
 
@@ -388,7 +392,11 @@ def run_one(version, P, missing_pct, device, rank_pseudo=None,
     n_params = sum(p.numel() for p in model.parameters())
     pseudo_params = sum(p.numel() for p in model.pseudo.parameters())
 
-    stopping_lr = P["lr"] / STOPPING_FACTOR
+    # lr0/10 is the published rule and stays the default so v1-vs-v3 is the
+    # exact original setup. stopping_study.py found lr0/100 lands within
+    # 0.0-0.1% of the best held-out NMAE (lr0/10: 0.3-0.9% off) for ~1.4x the
+    # iterations; --stop-factor 100 selects it.
+    stopping_lr = P["lr"] / P.get("stop_factor", STOPPING_FACTOR)
     iter_times, iter_peaks = [], []
     it, hit_cap = 0, False
     C_train, complete_data = None, None
@@ -506,6 +514,8 @@ def run_one(version, P, missing_pct, device, rank_pseudo=None,
                normalized=bool(P.get("normalize")),
                final_loss=float(cost), base_alloc_mb=base_alloc / MB,
                lr=P["lr"], B=P["batch_size"], f_enc=P.get("f_enc"),
+               stop_factor=P.get("stop_factor", STOPPING_FACTOR),
+               max_iters=P["max_iters"],
                cfs_identity=P.get("cfs_identity"),
                enc_layer_size=list(P["enc_layer_size"]),
                deco_layer_size=list(P["deco_layer_size"]), rank=P["rank"])
@@ -1250,6 +1260,8 @@ def single_run(args):
     P = get_problem(args.dataset, B=args.B, F=args.F, seed=args.seed)
     if args.max_iters:
         P["max_iters"] = args.max_iters
+    if args.stop_factor:
+        P["stop_factor"] = args.stop_factor
 
     gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
 
@@ -1350,9 +1362,12 @@ def main():
     ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
                     help="v3 pseudo-completion: linear W_f = B_f A_f, or CoLA "
                          "B_f sigma(A_f x_f)")
-    ap.add_argument("--cola-act", default="silu", choices=["silu", "relu", "gelu"],
-                    dest="cola_act")
+    ap.add_argument("--cola-act", default="silu",
+                    choices=["silu", "relu", "gelu", "tanh", "identity"], dest="cola_act")
     ap.add_argument("--max-iters", type=int, default=None, dest="max_iters")
+    ap.add_argument("--stop-factor", type=float, default=None, dest="stop_factor",
+                    help="stop when lr < lr0/F (default %d, the published rule; "
+                         "100 is what stopping_study.py recommends)" % STOPPING_FACTOR)
     ap.add_argument("--no-cluster", action="store_true",
                     help="skip clustering (the dense (B,B) is infeasible past ~20k)")
     ap.add_argument("--out", default=None)

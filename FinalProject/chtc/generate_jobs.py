@@ -14,6 +14,10 @@ Experiment groups
   v1     only the v1 half of `real`: v1 on ORL/COIL20/EYaleB, 3 seeds x 30/50/70%
   pair   only the v3 half of that pairing, on the same tiers as `v1`, so v1
          can be queued before the v3 variant (--pseudo/--rank-pseudo) is fixed
+  best   the tuned v3 on EVERY dataset: linear, CoLA-identity and CoLA-tanh
+         pseudo-completion at r_p=1, stopping at lr0/100 (cap 3000 iterations),
+         9 missing rates x 5 seeds. The v1-vs-v3 groups above keep the published
+         setup (linear, lr0/10) so that comparison stays exact.
   rank   v3 pseudo-rank sweep per dataset
   scale  synthetic scaling to B=200k, completion only
   base   classical completion baselines (mean/svd_impute/soft_impute/knn/mice)
@@ -41,6 +45,10 @@ DATASETS = {
     "COIL100": (7200, 1024, 1200,  989.0, "large", True),
     "OxfordPet": (7349, 3072, 111, 3090.6, "large", True),
     "Flowers": (8189, 3072,  204, 3837.4, "large", True),
+    # Tabular, z-scored from observed entries (mat_problem sets normalize).
+    # DSDD is past CLUSTER_LIMIT, so it reports completion only.
+    "HARUS":   (10299, 561,  120, 1190.3, "large", True),
+    "DSDD":    (58509,  48,   44, 3286.1, "small", False),
 }
 # v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
 # fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
@@ -89,19 +97,32 @@ def host_mem_gb(B, F, clustering):
     return int(math.ceil(base + dense + arrays))
 
 
-def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1):
+# The tuned v3 (Sep 2026 local sweeps): r_p=1 throughout; the CoLA variants
+# standardize each feature, start from mean imputation, and put sigma inside
+# the rank bottleneck. Stopping at lr0/100 is from stopping_study.py.
+BEST_VARIANTS = [
+    ("v3_rp1", ""),
+    ("v3-cola-identity_rp1", "--pseudo cola --cola-act identity"),
+    ("v3-cola-tanh_rp1", "--pseudo cola --cola-act tanh"),
+]
+BEST_STOP = "--stop-factor 100 --max-iters 3000"
+
+
+def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1, cola_act="silu"):
     out = []
     # The v3 variant goes into the job name (which is also the shard name), so
     # a linear run and a CoLA run of the same config can never overwrite each
     # other, and into the flags passed to bench_v1_v3.py.
-    v3name = "v3" + ("" if pseudo == "blockdiag" else f"-{pseudo}") + f"_rp{rank_pseudo}"
-    v3flags = "" if pseudo == "blockdiag" else f"--pseudo {pseudo}"
+    tag = "" if pseudo == "blockdiag" else f"-{pseudo}-{cola_act}"
+    v3name = f"v3{tag}_rp{rank_pseudo}"
+    v3flags = "" if pseudo == "blockdiag" else f"--pseudo {pseudo} --cola-act {cola_act}"
 
     def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-",
-            B=200, F=50, v1gb=0.0):
+            B=200, F=50, v1gb=0.0, flags=None):
         clustering = "--no-cluster" not in extra
-        if version == "v3" and v3flags:
-            extra = v3flags if extra == "-" else f"{extra} {v3flags}"
+        f = v3flags if flags is None else flags
+        if version == "v3" and f:
+            extra = f if extra == "-" else f"{extra} {f}"
         mem = host_mem_gb(B, F, clustering=clustering)
         if version == "v1":
             # v1 builds its (F,B,B) PARAMETERS on the host as F separate
@@ -157,6 +178,19 @@ def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1):
                             add(f"pair_{v3name}_{ds}_m{int(m*100)}_s{s}", tier, "v3",
                                 ds, "-", m, s, rank_pseudo, extra, B=B, F=F)
 
+    if exp in ("best", "all"):
+        targets = [("synthetic", 200, 50, "small", True)] + [
+            (ds, v[0], v[1], v[4], v[5]) for ds, v in DATASETS.items()]
+        for ds, B, F, sub, clu in targets:
+            base = "-" if (clu and B <= CLUSTER_LIMIT) else "--no-cluster"
+            for vname, vflags in BEST_VARIANTS:
+                flags = f"{vflags} {BEST_STOP}".strip()
+                for s in SEEDS:
+                    for m in MISSING:
+                        add(f"best_{vname}_{ds}_m{int(m*100)}_s{s}", sub, "v3",
+                            ds, 200 if ds == "synthetic" else "-", m, s, 1, base,
+                            B=B, F=F, flags=flags)
+
     if exp in ("rank", "all"):
         rname = "rank" + ("" if pseudo == "blockdiag" else f"-{pseudo}")
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
@@ -193,16 +227,21 @@ def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default="main",
-                    choices=["syn", "real", "v1", "pair", "rank", "scale", "base",
-                             "main", "all"])
+                    choices=["syn", "real", "v1", "pair", "best", "rank", "scale",
+                             "base", "main", "all"])
     ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
                     help="v3 pseudo-completion variant for every v3 job")
+    ap.add_argument("--cola-act", default="silu", dest="cola_act",
+                    choices=["silu", "relu", "gelu", "tanh", "identity"])
     ap.add_argument("--rank-pseudo", type=int, default=1, dest="rank_pseudo",
                     help="v3 r_p for every v3 job except the rank sweep")
     ap.add_argument("--image", default="karanvikyath17/duc-chtc:latest",
                     help="docker image (default: %(default)s)")
     ap.add_argument("--data-dir", default="$ENV(HOME)/duc_data",
                     help="where the .mat files live on the submit node")
+    ap.add_argument("--datasets", default=None,
+                    help="comma list: keep only jobs on these datasets (e.g. queue the "
+                         "baselines for new datasets without re-running the old ones)")
     ap.add_argument("--retry", type=int, default=2)
     # Always emitted into the DAG VARS: the submit files carry NO inline default
     # because HTCondor's $(name:default) parser stops at whitespace, and every
@@ -213,7 +252,13 @@ def main():
                     help="DeviceName for the xlarge tier (default: %(default)s)")
     args = ap.parse_args()
 
-    js = jobs_for(args.exp, args.pseudo, args.rank_pseudo)
+    js = jobs_for(args.exp, args.pseudo, args.rank_pseudo, args.cola_act)
+    if args.datasets:
+        keep = set(args.datasets.split(","))
+        unknown = keep - {"synthetic"} - set(DATASETS)
+        if unknown:
+            raise SystemExit(f"unknown datasets: {sorted(unknown)}")
+        js = [j for j in js if j["dataset"] in keep]
     n_v1 = sum(1 for j in js if j["version"] == "v1")
     print(f"# ===== DUC v1-vs-v3 DAG — group '{args.exp}' =====")
     print(f"# {len(js)} jobs ({n_v1} v1, {len(js)-n_v1} v3)")
