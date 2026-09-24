@@ -221,16 +221,22 @@ def mat_problem(name, seed=17):
     spec = {
         # name: (file, fea, lab, enc, K, d, lr, rank, alpha1, alpha2)
         "HARUS": ("HARUS.mat", "fea", "lab", [512, 256], 6, 20, 7e-3, 120, 1, 1),
+        # Rank rule (notes/rank_validity_rule.md): rank = round(0.2 * min(F, F_enc)),
+        # used only where the earlier rank was >= the input or encoder width, which
+        # left the CFS projection unconstraining (the model memorised observed
+        # entries). 0.2 = median rank/min(F, F_enc) over the authors' own configs.
+        # DSDD: rank 44 >= F_enc 40 -> 8.
         "DSDD": ("Dataset_for_Sensorless_Drive_diagnosis.mat", "fea", "lab",
-                 [40], 11, 4, 7e-3, 44, 1, 1),
+                 [40], 11, 4, 7e-3, 8, 1, 1),
         # VED (Vehicle Energy Dataset, Apache-2.0): 9 OBD-II engine signals from
         # the 10 vehicles with the most complete records; label = vehicle.
-        # With 9 features the encoder must WIDEN: rank K*d = 20 >= K clusters and
-        # < F_enc = 32, so the CFS projection is neither degenerate nor identity
-        # (DSDD's code config, rank 44 vs F_enc 40, is identity). VED is 85k rows
-        # (completion only); VED10k, 1,000 rows per vehicle, is the clustering set.
-        "VED": ("VED.mat", "fea", "lab", [32], 10, 2, 7e-3, 20, 1, 1),
-        "VED10k": ("VED10k.mat", "fea", "lab", [32], 10, 2, 7e-3, 20, 1, 1),
+        # First config: a 32-d latent with rank 20 (chosen so rank >= K). But 20 >= the
+        # 9 input features, so the projection constrained nothing — held-out error
+        # was worse than the column mean. By the rank rule above: round(0.2 * min(9,
+        # 32)) = 2. VED is 85k rows (completion only); VED10k, 1,000 rows per
+        # vehicle, is the clustering set.
+        "VED": ("VED.mat", "fea", "lab", [32], 10, 2, 7e-3, 2, 1, 1),
+        "VED10k": ("VED10k.mat", "fea", "lab", [32], 10, 2, 7e-3, 2, 1, 1),
     }[name]
     fn, fk, lk, enc, K, d, lr, rank, a1, a2 = spec
     mat = sio.loadmat(os.path.join(_DATA, fn))
@@ -282,7 +288,10 @@ def conv_problem(name, seed=17):
         data = Img.astype(float)
         lab = np.squeeze(mat['gnd'])
         lab = lab - lab.min() + 1
-        cfg = dict(K=100, d=12, rank=100 * 12, lr=4e-2, a1=1, a2=8,
+        # Rank rule (notes/rank_validity_rule.md): K*d = 1200 >= the 1024 pixels,
+        # so the projection could not constrain completion; round(0.2 * min(1024,
+        # F_enc 3840)) = 205, in line with COIL20's 240 on the same images.
+        cfg = dict(K=100, d=12, rank=205, lr=4e-2, a1=1, a2=8,
                    enc=[15], deco=[1], ks=[3], opad=[1])
     elif name in ("Flowers", "OxfordPet"):
         fn, K, d, lr = (("flowers.mat", 102, 2, 1e-3) if name == "Flowers"

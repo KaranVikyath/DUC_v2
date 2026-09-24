@@ -42,18 +42,19 @@ DATASETS = {
     "ORL":      (400, 1024,   40,    3.1, "large", True),
     "COIL20":  (1440, 1024,  240,   39.6, "small", True),
     "EYaleB":  (1280, 2016,  200,   61.5, "small", True),
-    "COIL100": (7200, 1024, 1200,  989.0, "large", True),
+    "COIL100": (7200, 1024,  205,  989.0, "large", True),
     "OxfordPet": (7349, 3072, 111, 3090.6, "large", True),
     "Flowers": (8189, 3072,  204, 3837.4, "large", True),
     # Tabular, z-scored from observed entries (mat_problem sets normalize).
     # DSDD is past CLUSTER_LIMIT, so it reports completion only.
     "HARUS":   (10299, 561,  120, 1190.3, "large", True),
-    "DSDD":    (58509,  48,   44, 3286.1, "small", False),
+    "DSDD":    (58509,  48,    8, 3286.1, "small", False),
     # VED telematics (9 engine signals, 10 vehicles): 85k completion-only, and a
     # balanced 10k copy for clustering.
-    "VED":     (85000,   9,   20, 1300.5, "small", False),
-    "VED10k":  (10000,   9,   20,   18.0, "large", True),
+    "VED":     (85000,   9,    2, 1300.5, "small", False),
+    "VED10k":  (10000,   9,    2,   18.0, "large", True),
 }
+# rank column: COIL100/DSDD/VED follow notes/rank_validity_rule.md.
 # v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
 # fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
 # The L40S has 46068 MiB, and COIL20's 39.6 GB does NOT fit it in practice: the
