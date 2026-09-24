@@ -34,3 +34,7 @@ FinalProject/project.tar.gz
 # Third-party SOTA baselines are fetched at pinned commits (Docker build or
 # locally), never committed: several have no license or are GPL.
 FinalProject/third_party/
+
+# KFMC is a port of the authors' unlicensed MATLAB: kept private, copied to
+# the submit node by hand so it rides in project.tar.gz but never in git.
+FinalProject/src/sota/kfmc.py

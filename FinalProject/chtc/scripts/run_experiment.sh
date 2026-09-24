@@ -83,6 +83,19 @@ if [ "$BSIZE" != "-" ]; then BFLAG="--B $BSIZE"; fi
 
 OUT="results/${TAG}.json"
 
+# CAGI and AEMC-NE have no license, so the public image does not carry them.
+# Fetch the one this job needs (pinned commit / SHA-256, see src/sota/fetch.py)
+# into a writable scratch SOTA_ROOT that also links the image's /opt/sota.
+case "$VERSION" in
+    sota_cagi|sota_aemc_ne)
+        export SOTA_ROOT="$PWD/sota_rt"
+        mkdir -p "$SOTA_ROOT"
+        for d in /opt/sota/*; do [ -e "$d" ] && ln -s "$d" "$SOTA_ROOT/"; done
+        (cd src && python -m sota.fetch --root "$SOTA_ROOT" "${VERSION#sota_}") \
+            || { echo "ERROR: could not fetch ${VERSION#sota_}"; exit 1; }
+        ;;
+esac
+
 cd src
 # Tee the run so a traceback comes back inside results.tar.gz rather than being
 # lost on the execute node.

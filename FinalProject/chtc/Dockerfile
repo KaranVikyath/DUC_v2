@@ -22,4 +22,23 @@ RUN pip install --no-cache-dir \
     tensorboard \
     pandas
 
+# --- state-of-the-art baselines (src/sota/) ----------------------------------
+# Packages the adapters import beyond the above: timm for CACTI, geomloss for
+# CAGI, xgboost for RefiDiff's refinement step. Everything else they touch is
+# either here already or stubbed by the adapter (IPython, matplotlib, catboost,
+# mamba_ssm — replaced by a pure-PyTorch port).
+RUN pip install --no-cache-dir \
+    tqdm \
+    timm==0.9.16 \
+    geomloss==0.3.1 \
+    xgboost==2.1.4
+
+# Third-party code WITH an open-source license (DiffPuter MIT, MIRI MIT, NewImp
+# and RefiDiff Apache-2.0, CACTI GPL-3.0), cloned at the commits pinned in
+# src/sota/fetch.py. CAGI and AEMC-NE have no license, so they are NOT put in
+# this public image; run_experiment.sh fetches them per job instead.
+COPY src/sota/fetch.py /tmp/sota_fetch.py
+RUN python /tmp/sota_fetch.py --root /opt/sota --licensed && rm /tmp/sota_fetch.py
+ENV SOTA_ROOT=/opt/sota
+
 WORKDIR /job
