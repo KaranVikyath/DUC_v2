@@ -39,8 +39,11 @@ require_gpus = (DeviceName == "$(gpu_model)") && (GlobalMemoryMb >= $(gpu_mem_mi
 # owner-reserved (Start = false); the backfill slots on those machines were
 # all running jobs that set this flag, and ours, without it, never got one.
 +is_resumable = true
-# v1 is ~1.3 s/iter on ORL and can run ~900 iterations, so leave headroom.
-+GPUJobLength = "medium"
+# "short" = up to 12 h. This tier exists for host RAM, not runtime: ORL v1 took
+# ~9 min on an L40S and the largest v3 job (Flowers, 3000-iteration cap) well
+# under an hour. "medium" only put these jobs under a second, smaller
+# per-user concurrency cap (GPULAB_MEDIUM) on top of the short one.
++GPUJobLength = "short"
 
 request_cpus   = 4
 request_memory = $(req_mem:32GB)
