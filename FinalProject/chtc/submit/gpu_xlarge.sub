@@ -1,5 +1,6 @@
-# GPU XLarge — v1 on EYaleB (61.5 GB; COIL20 fits the L40S), plus the v3 runs
-# paired with them for a same-hardware timing comparison.
+# GPU XLarge — v1 on EYaleB (61.5 GB) and COIL20 (39.6 GB predicted, but it ran
+# out of memory on the 44 GiB L40S once allocator fragmentation was counted),
+# plus the v3 runs paired with them for a same-hardware timing comparison.
 #
 # v1's pseudo-completion PARAMETERS are constructed on the host as F separate
 # nn.Linear layers before .to(device) — 8.5 GB for COIL20, 13 GB for EYaleB.
@@ -11,7 +12,7 @@ universe = container
 container_image = docker://$(image_name)
 
 executable = chtc/scripts/run_experiment.sh
-arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(tag) $(extra_args)
 
 transfer_input_files = $(inputs)
 should_transfer_files = YES

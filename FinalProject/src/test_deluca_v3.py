@@ -165,6 +165,44 @@ def test_gram_gradients(B=200, Fe=40, rank=25, device="cuda", tol=2e-3):
     return passed
 
 
+def test_top_eigvecs_grad(n=60, r=8, device="cuda", tol=1e-8):
+    """TopEigvecsFn's projector gradient == eigh's when the spectrum has no
+    ties, and stays finite where eigh's goes NaN (tie among discarded ones)."""
+    from deluca_v3 import TopEigvecsFn
+    eigh = torch.linalg.eigh
+    torch.manual_seed(7)
+    Q, _ = torch.linalg.qr(torch.randn(n, n, device=device, dtype=torch.float64))
+    S = torch.randn(n, n, device=device, dtype=torch.float64)
+
+    def grads(lam, rotate=True):
+        # rotate=False keeps G diagonal so eigh returns the tie EXACTLY; a
+        # rotated tie is split by rounding and never hits 0/0.
+        G0 = Q @ torch.diag(lam) @ Q.t() if rotate else torch.diag(lam)
+        out = {}
+        for name in ("eigh", "ours"):
+            G = G0.clone().requires_grad_(True)
+            Ur = (eigh(G)[1][:, -r:] if name == "eigh"
+                  else TopEigvecsFn.apply(G, r, eigh)[0])
+            ((Ur @ Ur.t()) * S).sum().backward()
+            out[name] = G.grad
+        return out
+
+    lam = torch.linspace(1.0, 50.0, n, device=device, dtype=torch.float64)
+    g = grads(lam)
+    rel = ((g["ours"] - g["eigh"]).abs().max()
+           / g["eigh"].abs().max()).item()
+    lam_tie = lam.clone()
+    lam_tie[3] = lam_tie[4]                       # tie in the discarded part
+    gt = grads(lam_tie, rotate=False)
+    ours_finite = bool(torch.isfinite(gt["ours"]).all())
+    eigh_finite = bool(torch.isfinite(gt["eigh"]).all())
+    passed = rel < tol and ours_finite
+    print(f"  {'PASS' if passed else 'FAIL'}  no ties: rel={rel:.2e}  "
+          f"tie in discarded spectrum: ours finite={ours_finite} "
+          f"(eigh finite={eigh_finite})")
+    return passed
+
+
 def test_encoder_nonan_equivalence(device="cuda"):
     """EncoderNoNaN must equal Encoder whenever the input has no NaN."""
     from DeLUCA import Encoder
@@ -282,6 +320,8 @@ if __name__ == "__main__":
     r7 = test_encoder_nonan_equivalence()
     print("[8] reconstruction-loss variants")
     r8 = test_loss_variants()
+    print("[9] top-r eigvec gradient == eigh's, finite under ties")
+    r9 = test_top_eigvecs_grad()
 
-    print("\nALL PASS" if all([r1, r2, r3, r4, r5, r6, r7, r8])
+    print("\nALL PASS" if all([r1, r2, r3, r4, r5, r6, r7, r8, r9])
           else "\nFAILURES PRESENT")

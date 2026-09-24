@@ -6,11 +6,11 @@ container job, one HTCondor job per configuration, collect JSON shards.
 ```
 chtc/
 ├── Dockerfile              torch 2.7/cu12.8 + scipy/sklearn/munkres
-├── generate_jobs.py        --exp syn|real|base|rank|scale|main|all  → DAG
+├── generate_jobs.py        --exp syn|real|v1|pair|base|rank|scale|main|all → DAG
 ├── submit/
 │   ├── gpu_small.sub       L40S, short queue — v3, baselines
 │   ├── gpu_large.sub       L40S, medium queue — v1 on ORL, big-dataset v3
-│   └── gpu_xlarge.sub      96 GB card, long queue — v1 on COIL20/EYaleB + paired v3
+│   └── gpu_xlarge.sub      H200, long queue — v1 on COIL20/EYaleB + paired v3
 ├── scripts/
 │   ├── build_project_tar.sh  repo → project.tar.gz (embeds git SHA)
 │   ├── stage_data.sh         verify .mat files on the submit node
@@ -110,7 +110,7 @@ pinning one, so each submit file carries a `require_gpus` expression:
 | tier | default `gpu_model` | CHTC has | jobs |
 |---|---|---|---|
 | `gpu_small` / `gpu_large` | `NVIDIA L40S` (46 GB) | 13 | all v3, all baselines, v1 on ORL |
-| `gpu_xlarge` | `NVIDIA A100-SXM4-80GB` | 11 | v1 on COIL20/EYaleB + their paired v3 |
+| `gpu_xlarge` | `NVIDIA H200` (141 GB) | 6 | v1 on COIL20/EYaleB + their paired v3 |
 
 (There is also a single RTX PRO 6000 and 6 H200s; do not pin the lone card —
 36 jobs through one GPU is days.)
@@ -119,7 +119,7 @@ Two consequences:
 
 - **Everything in the main tables runs on the L40S**, including the classical
   baselines (they are on the GPU queue precisely for this reason, not a CPU one).
-- COIL20/EYaleB v1 cannot fit a 46 GB card, so those pairs run on the A100-80GB
+- COIL20/EYaleB v1 cannot fit a 46 GB card, so those pairs run on the H200
   tier — same-card *within* the pair, but not on the same card as the rest.
   Report them as a separate row group.
 
@@ -135,9 +135,9 @@ python chtc/generate_jobs.py --exp base --gpu-model "NVIDIA A100-SXM4-80GB" > ch
 Trade-off: 11 cards instead of 13, and A100s are popular, so expect a longer
 queue for a cleaner paper.
 
-Every shard records `torch.cuda.get_device_name()`. `--aggregate` prints the
-set of devices seen and marks any row whose seeds landed on different cards
-with `MIX!` — if you see that, those time/VRAM numbers are not reportable.
+Every shard records `torch.cuda.get_device_name()`. `aggregate.py` groups by
+GPU model as well as (dataset, method, missing rate), so a v3 paired with v1 on
+an H200 gets its own row instead of blending into the L40S one.
 
 If a tier sits idle, the pinned string does not match what CHTC advertises.
 Check with the `condor_status` line above and override in the DAG VARS, e.g.
@@ -151,8 +151,14 @@ for t in tars/results_*.tar.gz; do tar -xzf "$t" -C results/shards --strip-compo
 python src/aggregate.py "results/shards/*.json"          # stdlib only — runs on the login node
 ```
 
-`--aggregate` groups by (dataset, version, missing rate) and reports mean ± std
-across seeds.
+`aggregate.py` groups by (dataset, method, missing rate, GPU) and reports mean ±
+std across seeds. The `ok/n` column counts seeds with a finite result — anything
+below `n` means runs diverged, and they are left out of the mean.
+
+Every file a job returns is named after its DAG node (`<tag>.json`,
+`<tag>.log`, `<tag>.exit`), because all the tarballs are extracted into one
+directory. Before that, a paired v3 overwrote the main v3 with the same
+(dataset, missing, seed), and only the last-extracted `run.log` survived.
 
 ---
 
@@ -162,6 +168,8 @@ across seeds.
 |---|---|---|
 | `syn` | 90 | synthetic 200x50 as published — v1 vs v3, 9 rates x 5 seeds |
 | `real` | 324 | v3 on all six image sets; v1 on ORL/COIL20/EYaleB, each paired with a same-card v3 |
+| `v1` | 27 | only the v1 half of `real` — can be queued before the v3 variant is decided |
+| `pair` | 27 | only the paired-v3 half of `real`, on the same tiers as `v1` |
 | **`base`** | **315** | mean / svd_impute / soft_impute / knn / mice on every dataset, same L40S tier |
 | `rank` | 72 | v3 pseudo-rank sweep per dataset |
 | `scale` | 5 | synthetic to B=200k, completion only |
@@ -177,7 +185,7 @@ two Adam moments and one gradient temporary that is `5*F*B^2*4` bytes:
 |---|---|---|---|---|
 | synthetic | 200 | 50 | 0.04 GB | yes |
 | **ORL** | 400 | 1024 | **3.1 GB** | **yes** (L40S) |
-| **COIL20** | 1440 | 1024 | **39.6 GB** | **yes** (96 GB tier) |
+| **COIL20** | 1440 | 1024 | **39.6 GB** | **yes** (xlarge — ran out of memory on the 44 GiB L40S) |
 | **EYaleB** | 1280 | 2016 | **61.5 GB** | **yes** (96 GB tier) |
 | COIL100 | 7200 | 1024 | 989 GB | no |
 | OxfordPet | 7349 | 3072 | 3091 GB | no |

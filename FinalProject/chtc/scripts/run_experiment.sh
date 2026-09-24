@@ -1,13 +1,18 @@
 #!/bin/bash
 # Executed inside the DUC container on a CHTC GPU node.
 #
-#   run_experiment.sh <version> <dataset> <bsize> <missing> <seed> <rank_pseudo> [extra...]
+#   run_experiment.sh <version> <dataset> <bsize> <missing> <seed> <rank_pseudo> <tag> [extra...]
 #
 # bsize "-" means "use the dataset's own sample count".
+# tag is the DAG node name. Every file this job returns is named after it:
+# the tarballs are all extracted into ONE directory, so a shared name like
+# run.log — or a paired v3 with the same (dataset, missing, seed) as a main v3
+# — was silently overwritten by whichever tarball happened to extract last.
 set -uo pipefail
 
 VERSION="${1}"; DATASET="${2}"; BSIZE="${3}"; MISSING="${4}"; SEED="${5}"; RP="${6}"
-shift 6
+TAG="${7}"
+shift 7
 EXTRA="${*:-}"
 # The DAG uses "-" as a placeholder for "no extra flags" because an empty VARS
 # value would collapse the argument list. Forwarding it verbatim makes argparse
@@ -15,7 +20,7 @@ EXTRA="${*:-}"
 [ "$EXTRA" = "-" ] && EXTRA=""
 
 echo "=== DUC experiment runner ==="
-echo "version=$VERSION dataset=$DATASET B=$BSIZE missing=$MISSING seed=$SEED r_p=$RP"
+echo "tag=$TAG version=$VERSION dataset=$DATASET B=$BSIZE missing=$MISSING seed=$SEED r_p=$RP"
 echo "extra='$EXTRA'"
 echo "host=$(hostname)  date=$(date -u)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "no GPU"
@@ -28,7 +33,7 @@ if [ -n "${_CONDOR_SCRATCH_DIR:-}" ]; then cd "$_CONDOR_SCRATCH_DIR"; fi
 # failure" and the real error never leaves the execute node. Guarantee the
 # tarball exists on every exit path, with the log inside.
 mkdir -p results
-trap 'echo "exit=$?" > results/exit_status.txt 2>/dev/null; \
+trap 'echo "exit=$?" > "results/${TAG}.exit" 2>/dev/null; \
       tar -czf results.tar.gz results 2>/dev/null || true' EXIT
 
 if [ -f project.tar.gz ]; then
@@ -74,7 +79,7 @@ fi
 BFLAG=""
 if [ "$BSIZE" != "-" ]; then BFLAG="--B $BSIZE"; fi
 
-OUT="results/${DATASET}_${VERSION}_rp${RP}_m${MISSING}_s${SEED}.json"
+OUT="results/${TAG}.json"
 
 cd src
 # Tee the run so a traceback comes back inside results.tar.gz rather than being
@@ -82,12 +87,12 @@ cd src
 python bench_v1_v3.py --single \
     --version "$VERSION" --dataset "$DATASET" $BFLAG \
     --missing "$MISSING" --seed "$SEED" --rank-pseudo "$RP" \
-    --out "../$OUT" $EXTRA 2>&1 | tee "../results/run.log"
+    --out "../$OUT" $EXTRA 2>&1 | tee "../results/${TAG}.log"
 STATUS=${PIPESTATUS[0]}
 cd ..
 
 if [ "$STATUS" -ne 0 ]; then
-    echo "run failed with status $STATUS — see results/run.log"
+    echo "run failed with status $STATUS — see results/${TAG}.log"
     exit "$STATUS"          # the EXIT trap still ships results.tar.gz
 fi
 

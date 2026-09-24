@@ -1289,18 +1289,29 @@ def single_run(args):
     #     construction stacks on the first and the job is killed on RSS
     #     (~26 GB against a 25.6 GB cap). v1 runs hundreds of slow iterations
     #     anyway, so a 3-iteration warmup changes its timing by nothing.
+    extra, label, variant = {}, None, ""
+    if args.version == "v3" and args.pseudo != "blockdiag":
+        extra = dict(pseudo_mode=args.pseudo, cola_act=args.cola_act)
+        variant = f"-{args.pseudo}" + (f"-{args.cola_act}" if args.pseudo == "cola" else "")
+        label = f"v3{variant}(r_p={args.rank_pseudo})"
+
     if device.type == "cuda" and args.version != "v1":
         warm = dict(P)
         warm["max_iters"] = 3
         run_one(args.version, warm, args.missing, device,
-                rank_pseudo=args.rank_pseudo, verbose=False, skip_cluster=True)
+                rank_pseudo=args.rank_pseudo, verbose=False, skip_cluster=True,
+                seed=args.seed, label=label, **extra)
+    # seed must be passed explicitly: run_one defaults to 17, and without it
+    # every CHTC "seed" of a real dataset re-ran seed 17 (std 0.0000 in the table).
     r = run_one(args.version, P, args.missing, device,
-                rank_pseudo=args.rank_pseudo, skip_cluster=args.no_cluster)
+                rank_pseudo=args.rank_pseudo, skip_cluster=args.no_cluster,
+                seed=args.seed, label=label, **extra)
     r["seed"] = args.seed
     r["device"] = gpu_name
+    r["pseudo_mode"] = args.pseudo if args.version == "v3" else None
     out = args.out or os.path.join(
         _DATA, "shards",
-        f"{args.dataset}_{args.version}_rp{args.rank_pseudo}_"
+        f"{args.dataset}_{args.version}{variant}_rp{args.rank_pseudo}_"
         f"m{int(args.missing*100)}_s{args.seed}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
@@ -1309,61 +1320,10 @@ def single_run(args):
 
 
 def aggregate(pattern):
-    """Merge per-job shards, averaging repeated seeds and reporting spread."""
-    import glob
-    from collections import defaultdict
-    shards = []
-    for p in glob.glob(pattern):
-        try:
-            d = json.load(open(p))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if isinstance(d, dict) and {"dataset", "tag", "missing_pct"} <= d.keys():
-            shards.append(d)
-    if not shards:
-        print(f"no result shards matched {pattern}")
-        return
-    groups = defaultdict(list)
-    for s in shards:
-        groups[(s["dataset"], s["tag"], s["missing_pct"])].append(s)
-
-    # Held-out metrics only. The legacy completion_acc pasted observed entries
-    # back before scoring and is not comparable across methods (it is NaN for
-    # baselines by design). NMAE is per-feature scaled so every feature counts
-    # equally; compl* is held-out completion in original units.
-    # Same-hardware check: timing and VRAM are only comparable across methods
-    # if every job in the table ran on the same GPU model. Print the set of
-    # devices seen, and flag any group that mixes them.
-    devices = sorted({str(s.get("device", "?")) for s in shards})
-    print(f"  devices: {', '.join(devices)}"
-          + ("" if len(devices) == 1 else
-             "   <-- MIXED: time/VRAM are not comparable across rows on different GPUs"))
-    hdr = (f"  {'dataset':<10} | {'method':<12} | {'Miss':>5} | {'n':>2} | "
-           f"{'time(s)':>8} | {'peak MB':>8} | {'NMAE':>15} | "
-           f"{'compl*%':>15} | {'Clust%':>15} | {'gpu':<4}")
-    print(hdr)
-    print("  " + "-" * (len(hdr) - 2))
-    last_ds = None
-    for key in sorted(groups, key=lambda k: (k[0], k[2], k[1])):
-        g = groups[key]
-        if last_ds not in (None, key[0]):
-            print("  " + "-" * (len(hdr) - 2))
-        last_ds = key[0]
-        def ms(f):
-            v = np.array([x.get(f, np.nan) for x in g], dtype=float)
-            v = v[~np.isnan(v)]
-            return (np.mean(v), np.std(v)) if len(v) else (float("nan"),) * 2
-        n_m, n_s = ms("nmae_unobs")
-        c_m, c_s = ms("completion_unobs_raw")
-        k_m, k_s = ms("cluster_acc")
-        t_m, _ = ms("total_time_s")
-        p_m, _ = ms("peak_train_mb")
-        devs = {str(x.get("device", "?")) for x in g}
-        dev_tag = "MIX!" if len(devs) > 1 else str(devices.index(next(iter(devs))))
-        print(f"  {key[0]:<10} | {key[1]:<12} | {key[2]*100:>4.0f}% | {len(g):>2} | "
-              f"{t_m:>8.1f} | {p_m:>8.1f} | "
-              f"{n_m:>7.4f} +-{n_s:>6.4f} | {c_m:>7.2f} +-{c_s:>5.2f} | "
-              f"{k_m:>7.2f} +-{k_s:>5.2f} | {dev_tag:<4}")
+    """Merge per-job shards into one table — see aggregate.py, which is kept
+    stdlib-only so the same code runs on the CHTC login node."""
+    from aggregate import report
+    report(pattern)
 
 
 def main():
@@ -1387,6 +1347,11 @@ def main():
     ap.add_argument("--missing", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=17)
     ap.add_argument("--rank-pseudo", type=int, default=RANK_PSEUDO, dest="rank_pseudo")
+    ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
+                    help="v3 pseudo-completion: linear W_f = B_f A_f, or CoLA "
+                         "B_f sigma(A_f x_f)")
+    ap.add_argument("--cola-act", default="silu", choices=["silu", "relu", "gelu"],
+                    dest="cola_act")
     ap.add_argument("--max-iters", type=int, default=None, dest="max_iters")
     ap.add_argument("--no-cluster", action="store_true",
                     help="skip clustering (the dense (B,B) is infeasible past ~20k)")

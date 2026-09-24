@@ -11,6 +11,9 @@ Experiment groups
          on ORL (large tier) and COIL20/EYaleB (xlarge: 80+ GB cards), paired
          with v3 on the same tier so timing is same-hardware. COIL100/Flowers/
          OxfordPet need 1-4 TB for v1 and are reported as infeasible.
+  v1     only the v1 half of `real`: v1 on ORL/COIL20/EYaleB, 3 seeds x 30/50/70%
+  pair   only the v3 half of that pairing, on the same tiers as `v1`, so v1
+         can be queued before the v3 variant (--pseudo/--rank-pseudo) is fixed
   rank   v3 pseudo-rank sweep per dataset
   scale  synthetic scaling to B=200k, completion only
   base   classical completion baselines (mean/svd_impute/soft_impute/knn/mice)
@@ -41,11 +44,11 @@ DATASETS = {
 }
 # v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
 # fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
-# The L40S has 46068 MiB. COIL20's 39.6 GB fits it (measured model runs at
-# 0.96-0.99x of prediction, so ~39 GB actual + ~1 GB CUDA context), which keeps
-# it on the same card as every other job in the paper. Only EYaleB (61.5 GB)
-# genuinely needs an 80+ GB card.
-V1_LARGE_GB = 42.0
+# The L40S has 46068 MiB, and COIL20's 39.6 GB does NOT fit it in practice: the
+# Sep 22 run died in Adam's step with 34.7 GiB allocated plus 9.2 GiB reserved
+# by the caching allocator (fragmentation) on a 44.4 GiB card. The prediction
+# counts tensors, not allocator slack, so anything past ~30 GB goes to xlarge.
+V1_LARGE_GB = 30.0
 V1_XLARGE_GB = 70.0             # needs an 80+ GB card (EYaleB 61.5)
 # Datasets v1 is asked to run on. Everything else is v3-only.
 V1_DATASETS = ("ORL", "COIL20", "EYaleB")
@@ -86,12 +89,20 @@ def host_mem_gb(B, F, clustering):
     return int(math.ceil(base + dense + arrays))
 
 
-def jobs_for(exp):
+def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1):
     out = []
+    # The v3 variant goes into the job name (which is also the shard name), so
+    # a linear run and a CoLA run of the same config can never overwrite each
+    # other, and into the flags passed to bench_v1_v3.py.
+    v3name = "v3" + ("" if pseudo == "blockdiag" else f"-{pseudo}") + f"_rp{rank_pseudo}"
+    v3flags = "" if pseudo == "blockdiag" else f"--pseudo {pseudo}"
 
     def add(name, sub, version, dataset, bsize, missing, seed, rp, extra="-",
             B=200, F=50, v1gb=0.0):
-        mem = host_mem_gb(B, F, clustering=(extra != "--no-cluster"))
+        clustering = "--no-cluster" not in extra
+        if version == "v3" and v3flags:
+            extra = v3flags if extra == "-" else f"{extra} {v3flags}"
+        mem = host_mem_gb(B, F, clustering=clustering)
         if version == "v1":
             # v1 builds its (F,B,B) PARAMETERS on the host as F separate
             # nn.Linear layers before .to(device) — v1gb/5, i.e. 7.9 GB for
@@ -119,16 +130,17 @@ def jobs_for(exp):
             for m in MISSING:
                 add(f"syn_v1_m{int(m*100)}_s{s}", "small", "v1",
                     "synthetic", 200, m, s, 10, B=200, F=50)
-                add(f"syn_v3_m{int(m*100)}_s{s}", "small", "v3",
-                    "synthetic", 200, m, s, 1, B=200, F=50)
+                add(f"syn_{v3name}_m{int(m*100)}_s{s}", "small", "v3",
+                    "synthetic", 200, m, s, rank_pseudo, B=200, F=50)
 
-    if exp in ("real", "main", "all"):
+    if exp in ("real", "main", "all", "v1", "pair"):
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
             extra = "-" if (clu and B <= CLUSTER_LIMIT) else "--no-cluster"
-            for s in SEEDS:
-                for m in MISSING:
-                    add(f"real_v3_{ds}_m{int(m*100)}_s{s}", sub, "v3",
-                        ds, "-", m, s, 1, extra, B=B, F=F)
+            if exp in ("real", "main", "all"):
+                for s in SEEDS:
+                    for m in MISSING:
+                        add(f"real_{v3name}_{ds}_m{int(m*100)}_s{s}", sub, "v3",
+                            ds, "-", m, s, rank_pseudo, extra, B=B, F=F)
             if ds in V1_DATASETS and v1gb <= V1_XLARGE_GB:
                 # v1 is slow (ORL ~1.3 s/iter; COIL20/EYaleB ~13x that), so it
                 # gets a reduced grid. The v3 jobs at the SAME (missing, seed)
@@ -138,17 +150,20 @@ def jobs_for(exp):
                 tier = "xlarge" if v1gb > V1_LARGE_GB else "large"
                 for s in SEEDS[:3]:
                     for m in (0.3, 0.5, 0.7):
-                        add(f"real_v1_{ds}_m{int(m*100)}_s{s}", tier, "v1",
-                            ds, "-", m, s, 10, B=B, F=F, v1gb=v1gb)
-                        add(f"pair_v3_{ds}_m{int(m*100)}_s{s}", tier, "v3",
-                            ds, "-", m, s, 1, extra, B=B, F=F)
+                        if exp != "pair":
+                            add(f"real_v1_{ds}_m{int(m*100)}_s{s}", tier, "v1",
+                                ds, "-", m, s, 10, B=B, F=F, v1gb=v1gb)
+                        if exp != "v1":
+                            add(f"pair_{v3name}_{ds}_m{int(m*100)}_s{s}", tier, "v3",
+                                ds, "-", m, s, rank_pseudo, extra, B=B, F=F)
 
     if exp in ("rank", "all"):
+        rname = "rank" + ("" if pseudo == "blockdiag" else f"-{pseudo}")
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
             extra = "-" if (clu and B <= CLUSTER_LIMIT) else "--no-cluster"
             for rp in (1, 5, 10, 25):
                 for s in SEEDS[:3]:
-                    add(f"rank_{ds}_rp{rp}_s{s}", sub, "v3", ds, "-", 0.3, s,
+                    add(f"{rname}_{ds}_rp{rp}_s{s}", sub, "v3", ds, "-", 0.3, s,
                         rp, extra, B=B, F=F)
 
     if exp in ("base", "all"):
@@ -169,8 +184,8 @@ def jobs_for(exp):
     if exp in ("scale", "all"):
         for B in (10000, 25000, 50000, 100000, 200000):
             extra = "--no-cluster" if B > CLUSTER_LIMIT else "-"
-            add(f"scale_B{B}", "small", "v3",
-                "synthetic", B, 0.3, 17, 1, extra, B=B, F=50)
+            add(f"scale_{v3name}_B{B}", "small", "v3",
+                "synthetic", B, 0.3, 17, rank_pseudo, extra, B=B, F=50)
 
     return out
 
@@ -178,7 +193,12 @@ def jobs_for(exp):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default="main",
-                    choices=["syn", "real", "rank", "scale", "base", "main", "all"])
+                    choices=["syn", "real", "v1", "pair", "rank", "scale", "base",
+                             "main", "all"])
+    ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
+                    help="v3 pseudo-completion variant for every v3 job")
+    ap.add_argument("--rank-pseudo", type=int, default=1, dest="rank_pseudo",
+                    help="v3 r_p for every v3 job except the rank sweep")
     ap.add_argument("--image", default="karanvikyath17/duc-chtc:latest",
                     help="docker image (default: %(default)s)")
     ap.add_argument("--data-dir", default="$ENV(HOME)/duc_data",
@@ -193,7 +213,7 @@ def main():
                     help="DeviceName for the xlarge tier (default: %(default)s)")
     args = ap.parse_args()
 
-    js = jobs_for(args.exp)
+    js = jobs_for(args.exp, args.pseudo, args.rank_pseudo)
     n_v1 = sum(1 for j in js if j["version"] == "v1")
     print(f"# ===== DUC v1-vs-v3 DAG — group '{args.exp}' =====")
     print(f"# {len(js)} jobs ({n_v1} v1, {len(js)-n_v1} v3)")
@@ -217,7 +237,9 @@ def main():
         # synthetic jobs (no .mat) do not end up with a dangling comma.
         inputs = ("project.tar.gz," + f"{args.data_dir}/{mf}") if mf else "project.tar.gz"
         print(f"JOB {j['name']} {sub}")
-        print(f"VARS {j['name']} version=\"{j['version']}\" dataset=\"{j['dataset']}\" "
+        # tag = node name: run_experiment.sh names the shard and log after it.
+        print(f"VARS {j['name']} tag=\"{j['name']}\" "
+              f"version=\"{j['version']}\" dataset=\"{j['dataset']}\" "
               f"bsize=\"{j['bsize']}\" missing=\"{j['missing']}\" seed=\"{j['seed']}\" "
               f"rankpseudo=\"{j['rankpseudo']}\" extra_args=\"{j['extra']}\" "
               f"image_name=\"{args.image}\" inputs=\"{inputs}\" "

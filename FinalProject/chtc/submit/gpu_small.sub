@@ -6,7 +6,7 @@ universe = container
 container_image = docker://$(image_name)
 
 executable = chtc/scripts/run_experiment.sh
-arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(extra_args)
+arguments  = $(version) $(dataset) $(bsize) $(missing) $(seed) $(rankpseudo) $(tag) $(extra_args)
 
 # Comma-separated list, built by generate_jobs.py: the tarball plus the one
 # .mat this job needs (largest 44 MB, inside HTCondor limits — no /staging).

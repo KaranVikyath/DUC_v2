@@ -186,6 +186,60 @@ class LowRankPseudoCompletion(nn.Module):
         return out.t().reshape(self.input_shape)
 
 
+class CoLAPseudoCompletion(nn.Module):
+    """Pseudo-completion with the activation INSIDE the rank bottleneck.
+
+    LowRankPseudoCompletion is linear in the samples before its PReLU:
+        out_f = PReLU(B_f A_f x_f + b_f)
+    CoLA (Liu et al., "CoLA: Compute-Efficient Pre-Training of LLMs via Low-Rank
+    Activation", EMNLP 2025) replaces a dense layer by an auto-encoder
+    y = B sigma(A x).
+    Here that becomes, per feature f,
+        out_f = PReLU(B_f sigma(A_f x_f + c_f) + b_f)
+    so each feature's completion is a nonlinear function of its r_p pooled
+    statistics. Same parameters as the linear version plus F*r_p for c.
+
+    At r_p = 1 sigma acts on a single scalar per feature and the map stays
+    rank-1 — compare the two at r_p > 1. Portable autograd path only (no fused
+    kernel), so time it separately from the linear version.
+    """
+
+    ACTS = {"silu": nn.functional.silu, "relu": torch.relu, "gelu": nn.functional.gelu}
+
+    def __init__(self, input_shape, flat_layer_size, rank_pseudo, act="silu"):
+        super().__init__()
+        if act not in self.ACTS:
+            raise ValueError(f"act must be one of {tuple(self.ACTS)}: {act}")
+        self.input_shape = input_shape
+        self.feature_size = int(np.prod(input_shape[1:]))
+        self.batch_size = flat_layer_size[0]
+        self.rank_pseudo = int(rank_pseudo)
+        self.act_name = act
+        self.act = self.ACTS[act]
+
+        F, B, r = self.feature_size, self.batch_size, self.rank_pseudo
+        self.A = nn.Parameter(torch.empty(F, r, B))
+        self.c = nn.Parameter(torch.zeros(F, r, 1))
+        self.B_mat = nn.Parameter(torch.empty(F, B, r))
+        self.bias = nn.Parameter(torch.zeros(F, B))
+        self.prelu_weight = nn.Parameter(torch.full((F, 1), 0.25))
+
+        # Kaiming on each factor: A x has variance 2 E[x^2], sigma roughly halves
+        # it, and B_mat's 2/r brings it back — the same output variance as the
+        # linear version's Var(W_ij) = 2/B.
+        nn.init.normal_(self.A, std=(2.0 / B) ** 0.5)
+        nn.init.normal_(self.B_mat, std=(2.0 / r) ** 0.5)
+
+    def forward(self, x):
+        x = x.reshape(self.batch_size, -1).float()
+        x = torch.nan_to_num(x, nan=0.0)
+        x_t = x.t().unsqueeze(2)                                   # (F, B, 1)
+        h = self.act(torch.bmm(self.A, x_t) + self.c)              # (F, r, 1)
+        out = torch.bmm(self.B_mat, h).squeeze(2) + self.bias      # (F, B)
+        out = torch.clamp(out, min=0) + self.prelu_weight * torch.clamp(out, max=0)
+        return out.t().reshape(self.input_shape)
+
+
 class FullLowRankPseudoCompletion(nn.Module):
     """Rank-r mixing over the ENTIRE flattened matrix, not per feature.
 
@@ -235,6 +289,48 @@ class FullLowRankPseudoCompletion(nn.Module):
         out = out.view(self.batch_size, self.feature_size)  # row-major: i = b*F + f
         out = torch.clamp(out, min=0) + self.prelu_weight * torch.clamp(out, max=0)
         return out.reshape(self.input_shape)
+
+
+class TopEigvecsFn(torch.autograd.Function):
+    """Top-r eigenvectors of a symmetric G, differentiated through the projector.
+
+    torch.linalg.eigh's backward divides by (lam_i - lam_j) for EVERY pair,
+    including the n - r eigenvectors CFS throws away. Those carry zero gradient,
+    so a float32 tie anywhere in the discarded spectrum is 0/0 = NaN and poisons
+    every gradient upstream of CFS. That is what turned 222 of the 270 real-data
+    v3 runs on CHTC into NaN (COIL20, 10% missing: iteration 9).
+
+    Everything downstream uses only U_r U_r^T, which is invariant to rotations
+    inside the top-r subspace, so the top-vs-top terms cancel exactly. What is
+    left are the top-vs-rest terms, whose denominators are bounded below by the
+    eigengap at the cut, so this is the same gradient eigh would give without
+    the 0/0.
+
+    forward   (w, U) = eigh(G),  returns U[:, -r:] and w (w is not differentiated)
+    backward  M  = U_rest^T gU_r / (lam_top - lam_rest)     (n-r, r)
+              gG = sym(U_rest M U_r^T)
+    """
+
+    @staticmethod
+    def forward(ctx, G, r, eigh_fn):
+        w, U = eigh_fn(G)                       # ascending eigenvalues
+        ctx.save_for_backward(w, U)
+        ctx.r = r
+        ctx.mark_non_differentiable(w)
+        return U[:, -r:], w
+
+    @staticmethod
+    def backward(ctx, gUr, _gw):
+        w, U = ctx.saved_tensors
+        r = ctx.r
+        Ur, Ub = U[:, -r:], U[:, :-r]
+        gap = w[-r:].unsqueeze(0) - w[:-r].unsqueeze(1)          # (n-r, r), >= 0
+        # A tie AT the cut makes the subspace itself ill-defined; clamp so the
+        # step is merely huge rather than inf.
+        eps = torch.finfo(w.dtype).eps * w.abs().max().clamp_min(1.0)
+        M = (Ub.t() @ gUr) / gap.clamp_min(eps)
+        gG = Ub @ M @ Ur.t()
+        return 0.5 * (gG + gG.t()), None, None
 
 
 class EfficientCFSModule(nn.Module):
@@ -299,8 +395,7 @@ class EfficientCFSModule(nn.Module):
                 # Small latent, many samples (telemetry, synthetic): work in
                 # F_enc-space so nothing here scales with B.
                 G = Z.t() @ Z                   # (F_enc, F_enc)
-                w, U = self._eigh(G)            # ascending eigenvalues
-                Ur = U[:, -r:]                  # top-r eigenvectors
+                Ur, w = TopEigvecsFn.apply(G, r, self._eigh)   # top-r eigenvectors
                 ZU = Z @ Ur                     # (B, r)
                 PZ = ZU @ Ur.t()                # = Z U_r U_r^T
                 self._ZU = ZU.detach()
@@ -314,8 +409,7 @@ class EfficientCFSModule(nn.Module):
                 # than Z itself, so this cannot reintroduce the B**2 problem
                 # at scale. Its top eigenvectors are V_rank directly.
                 G = Z @ Z.t()                   # (B, B), B < F_enc
-                w, V = self._eigh(G)
-                Vr = V[:, -r:]                  # (B, r) = V_rank
+                Vr, _ = TopEigvecsFn.apply(G, r, self._eigh)   # (B, r) = V_rank
                 PZ = Vr @ (Vr.t() @ Z)
                 self._V = Vr.detach()
                 self._ZU = None
@@ -393,6 +487,8 @@ class DeLUCAV3(nn.Module):
     Constructor-compatible with DeLUCA plus:
         rank_pseudo : rank r_p of the factorized pseudo-completion weight
                       (None -> min(B, max(2*rank, 8))). Lower = less VRAM.
+        pseudo_mode : "blockdiag" (default, W_f = B_f A_f), "full" (one rank-r map over
+                      the whole matrix) or "cola" (B_f sigma(A_f x_f), sigma = cola_act).
         cfs_backend : "gram" (default, exact + fastest), "lowrank", or "cusolver".
         eigh_device : "cpu" (default) or "gpu" for the tiny (F_enc, F_enc) eigh.
         grad_clip   : max grad norm, or None (default) for no clipping.
@@ -416,7 +512,7 @@ class DeLUCAV3(nn.Module):
                  grad_clip=None, skip_nan_check=True, track_autoenc_loss=False,
                  defer_output=True, log_every=1,
                  loss_fn="frobenius", use_fused_loss=True,
-                 pseudo_mode="blockdiag"):
+                 pseudo_mode="blockdiag", cola_act="silu"):
         super().__init__()
         if loss_fn not in RECON_LOSSES:
             raise ValueError(f"loss_fn must be one of {RECON_LOSSES}")
@@ -453,12 +549,16 @@ class DeLUCAV3(nn.Module):
 
         # Layers (Encoder/Decoder reused from v2)
         enc_cls = EncoderNoNaN if skip_nan_check else Encoder
-        if pseudo_mode not in ("blockdiag", "full"):
-            raise ValueError(f"pseudo_mode must be blockdiag or full: {pseudo_mode}")
+        if pseudo_mode not in ("blockdiag", "full", "cola"):
+            raise ValueError(f"pseudo_mode must be blockdiag, full or cola: {pseudo_mode}")
         self.pseudo_mode = pseudo_mode
-        pseudo_cls = (LowRankPseudoCompletion if pseudo_mode == "blockdiag"
-                      else FullLowRankPseudoCompletion)
-        self.pseudo = pseudo_cls(input_shape, flat_layer_size, rank_pseudo)
+        if pseudo_mode == "cola":
+            self.pseudo = CoLAPseudoCompletion(input_shape, flat_layer_size,
+                                               rank_pseudo, act=cola_act)
+        else:
+            pseudo_cls = (LowRankPseudoCompletion if pseudo_mode == "blockdiag"
+                          else FullLowRankPseudoCompletion)
+            self.pseudo = pseudo_cls(input_shape, flat_layer_size, rank_pseudo)
         self.encoder = enc_cls(input_shape, enc_layer_size, kernel_size)
         self.CFS_module = EfficientCFSModule(rank, backend=cfs_backend,
                                              eigh_device=eigh_device)
