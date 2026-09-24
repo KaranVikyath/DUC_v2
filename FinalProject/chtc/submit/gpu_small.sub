@@ -52,7 +52,9 @@ log    = logs/$(Cluster).$(Process).log
 # and over and drains the DAG onto one dead machine.
 # To exclude a specific known-bad host, add to the DAG VARS:
 #   bad_node="gpu4003.chtc.wisc.edu"
-requirements = (Machine =!= LastRemoteHost) && (Machine != "$(bad_node:no.such.host)")
+# jcaicedogpu0004: its L40S raised "uncorrectable ECC error" on every DUC job
+# placed there (4 of 4, 2026-09-24). Override with bad_node="..." in VARS.
+requirements = (Machine =!= LastRemoteHost) && (Machine != "$(bad_node:jcaicedogpu0004.chtc.wisc.edu)")
 
 max_retries = 5
 
