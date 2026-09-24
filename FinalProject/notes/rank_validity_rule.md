@@ -40,3 +40,24 @@ were equally unconstrained on these datasets, so their rows are rerun too.
 Reporting: both the original-config and rule-corrected results are kept and
 shown; the rule was fixed from the authors' configs, not from any held-out
 error of the rerun.
+
+## Outcome of the rerun (5 seeds, L40S; results/rank_rule_2026-09-24 vs results/original_rank_configs)
+
+NMAE on held-out entries, old -> new:
+
+| dataset, 30 / 50 / 70% | v3 tanh | v3 identity | svd_impute | soft_impute |
+|---|---|---|---|---|
+| COIL100 | 0.81/0.82/0.68 -> 0.27/0.34/0.63 | 1.86/1.88/1.49 -> 0.37/0.35/0.63 | 0.75/0.75/0.75 -> 0.27/0.35/0.54 | unchanged 0.61/0.67/0.76 |
+| DSDD | 0.37/0.44/0.56 -> 0.42/0.62/1.25 | 0.57/0.88/0.94 -> 0.54/1.01/2.36 | 0.58/0.63/0.65 -> 0.41/0.47/0.62 | 0.24/0.29/0.38 -> 0.39/0.43/0.52 |
+| VED | 0.76/0.82/0.86 -> 0.87/1.50/3.15 | 1.26/1.76/2.18 -> 1.14/2.30/3.95 | 0.75/0.77/0.78 -> 0.72/0.84/0.95 | 0.64/0.68/0.72 -> 0.70/0.77/0.87 |
+
+COIL100 clustering: v3 tanh 12/10/8 -> 48/43/33 %, identity 5/4/4 -> 50/42/33 %
+(svd_impute 60/53/44 -> 61/56/46 %). v3 linear on COIL100 is unstable under
+the new rank: 4 of 5 seeds stop on a high-loss plateau.
+
+Reading: the rule repairs COIL100, where the old rank exceeded the pixel
+count. On the low-dimensional tables (DSDD 48, VED 9 features) the 0.2 ratio,
+taken from 1,000+-dimensional image configs, is too restrictive — it degrades
+SoftImpute as much as v3 — and DUC trails SoftImpute/MICE under either config.
+Open issue: svd_impute / soft_impute borrow DUC's rank; their rank should be
+chosen independently (e.g. on 5% of observed entries) for a fair baseline.
