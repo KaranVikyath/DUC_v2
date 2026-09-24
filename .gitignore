@@ -30,3 +30,7 @@ FinalProject/chtc/logs/
 FinalProject/chtc/tars/
 FinalProject/chtc/results/
 FinalProject/project.tar.gz
+
+# Third-party SOTA baselines are fetched at pinned commits (Docker build or
+# locally), never committed: several have no license or are GPL.
+FinalProject/third_party/

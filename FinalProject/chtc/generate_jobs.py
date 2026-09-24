@@ -49,6 +49,10 @@ DATASETS = {
     # DSDD is past CLUSTER_LIMIT, so it reports completion only.
     "HARUS":   (10299, 561,  120, 1190.3, "large", True),
     "DSDD":    (58509,  48,   44, 3286.1, "small", False),
+    # VED telematics (9 engine signals, 10 vehicles): 85k completion-only, and a
+    # balanced 10k copy for clustering.
+    "VED":     (85000,   9,   20, 1300.5, "small", False),
+    "VED10k":  (10000,   9,   20,   18.0, "large", True),
 }
 # v1 is queued on three tiers by its (F,B,B) footprint. Above XLARGE nothing
 # fits any single GPU: COIL100 needs 989 GB, Flowers 3.8 TB.
@@ -79,6 +83,8 @@ MATFILE = {
     "OxfordPet": "oxford_pet.mat",
     "HARUS": "HARUS.mat",
     "DSDD": "Dataset_for_Sensorless_Drive_diagnosis.mat",
+    "VED": "VED.mat",
+    "VED10k": "VED10k.mat",
 }
 
 
@@ -106,6 +112,19 @@ BEST_VARIANTS = [
     ("v3-cola-tanh_rp1", "--pseudo cola --cola-act tanh"),
 ]
 BEST_STOP = "--stop-factor 100 --max-iters 3000"
+
+# State-of-the-art baselines (src/sota/). Keep in sync with sota.METHODS /
+# sota.EXPENSIVE there — this file is stdlib-only so it cannot import them.
+# Pre-registered protocol: cheap methods and small datasets get the full grid
+# with the "full" budget; the expensive methods on the large datasets get
+# 5 rates x 3 seeds with the "reduced" budget, fixed in each adapter.
+SOTA_CHEAP = ["newimp", "aemc_ne", "kfmc", "kfsc", "kcsc"]
+SOTA_EXPENSIVE = ["diffputer", "cacti", "miri", "refidiff", "cagi", "altpzf"]
+# n x n self-expressive matrices: 13.7 GB at DSDD's 58,509 rows, worse at VED's 85k.
+SOTA_SKIP = {("altpzf", "DSDD"), ("altpzf", "VED"), ("kcsc", "DSDD"), ("kcsc", "VED")}
+SOTA_LARGE = {"COIL100", "Flowers", "OxfordPet", "HARUS", "DSDD", "VED"}
+SOTA_REDUCED_RATES = [0.1, 0.3, 0.5, 0.7, 0.9]
+SOTA_REDUCED_SEEDS = [17, 18, 19]
 
 
 def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1, cola_act="silu"):
@@ -191,6 +210,25 @@ def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1, cola_act="silu"):
                             ds, 200 if ds == "synthetic" else "-", m, s, 1, base,
                             B=B, F=F, flags=flags)
 
+    if exp in ("sota", "all"):
+        targets = [("synthetic", 200, 50, "small", True)] + [
+            (ds, v[0], v[1], v[4], v[5]) for ds, v in DATASETS.items()]
+        for method in SOTA_CHEAP + SOTA_EXPENSIVE:
+            for ds, B, F, sub, clu in targets:
+                if (method, ds) in SOTA_SKIP:
+                    continue
+                reduced = method in SOTA_EXPENSIVE and ds in SOTA_LARGE
+                rates = SOTA_REDUCED_RATES if reduced else MISSING
+                seeds = SOTA_REDUCED_SEEDS if reduced else SEEDS
+                base = "-" if (clu and B <= CLUSTER_LIMIT) else "--no-cluster"
+                prof = f"--sota-profile {'reduced' if reduced else 'full'}"
+                extra = prof if base == "-" else f"{base} {prof}"
+                for s in seeds:
+                    for m in rates:
+                        add(f"sota_{method}_{ds}_m{int(m*100)}_s{s}", sub, f"sota_{method}",
+                            ds, 200 if ds == "synthetic" else "-", m, s, 0, extra,
+                            B=B, F=F)
+
     if exp in ("rank", "all"):
         rname = "rank" + ("" if pseudo == "blockdiag" else f"-{pseudo}")
         for ds, (B, F, rank, v1gb, sub, clu) in DATASETS.items():
@@ -227,8 +265,8 @@ def jobs_for(exp, pseudo="blockdiag", rank_pseudo=1, cola_act="silu"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default="main",
-                    choices=["syn", "real", "v1", "pair", "best", "rank", "scale",
-                             "base", "main", "all"])
+                    choices=["syn", "real", "v1", "pair", "best", "sota", "rank",
+                             "scale", "base", "main", "all"])
     ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
                     help="v3 pseudo-completion variant for every v3 job")
     ap.add_argument("--cola-act", default="silu", dest="cola_act",

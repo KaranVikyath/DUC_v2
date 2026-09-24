@@ -63,6 +63,12 @@ bash chtc/scripts/stage_data.sh
 | `flowers.mat` | Flowers | 24.0 MB |
 | `Dataset_for_Sensorless_Drive_diagnosis.mat` | DSDD | 21.9 MB |
 | `HARUS.mat` | HARUS | 44.2 MB |
+| `VED.mat` | VED (85k x 9 telematics, completion only) | 1.2 MB |
+| `VED10k.mat` | VED10k (10k x 9, clustering) | 0.2 MB |
+
+The two VED files are built from the Vehicle Energy Dataset (Apache-2.0) by
+`data_prep/build_ved.py` — see its docstring for the pinned source commit and
+every filtering step.
 
 ## 2. Every run: pull, build, submit
 
@@ -170,12 +176,13 @@ directory. Before that, a paired v3 overwrote the main v3 with the same
 | `real` | 414 | v3 on all eight real sets (images + HARUS/DSDD); v1 on ORL/COIL20/EYaleB, each paired with a same-card v3 |
 | `v1` | 27 | only the v1 half of `real` — can be queued before the v3 variant is decided |
 | `pair` | 27 | only the paired-v3 half of `real`, on the same tiers as `v1` |
-| **`best`** | **1215** | tuned v3 on every dataset: linear / CoLA-identity / CoLA-tanh at r_p=1, `--stop-factor 100 --max-iters 3000`, 9 rates x 5 seeds, L40S |
-| **`base`** | **405** | mean / svd_impute / soft_impute / knn / mice on every dataset, same L40S tier |
+| **`best`** | **1485** | tuned v3 on every dataset: linear / CoLA-identity / CoLA-tanh at r_p=1, `--stop-factor 100 --max-iters 3000`, 9 rates x 5 seeds, L40S |
+| **`sota`** | **4245** | 11 recent completion / clustering-with-missing-data methods (`src/sota/`), same masks and metrics; expensive methods on the large datasets use 5 rates x 3 seeds and the `reduced` budget (pre-registered). Needs the image with `/opt/sota` |
+| **`base`** | **495** | mean / svd_impute / soft_impute / knn / mice on every dataset, same L40S tier |
 | `rank` | 96 | v3 pseudo-rank sweep per dataset |
 | `scale` | 5 | synthetic to B=200k, completion only |
 | **`main`** | **504** | `syn` + `real` — the v1-vs-v3 tables |
-| `all` | 2225 | everything |
+| `all` | 6944 | everything |
 
 `--datasets A,B` keeps only the jobs on those datasets, e.g. queueing the
 baselines for newly added datasets without re-running the rest:

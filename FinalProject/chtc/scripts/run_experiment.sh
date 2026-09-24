@@ -56,6 +56,8 @@ declare -A MATFILE=(
     [OxfordPet]="oxford_pet.mat"
     [HARUS]="HARUS.mat"
     [DSDD]="Dataset_for_Sensorless_Drive_diagnosis.mat"
+    [VED]="VED.mat"
+    [VED10k]="VED10k.mat"
 )
 if [ "$DATASET" != "synthetic" ]; then
     F="${MATFILE[$DATASET]:-}"

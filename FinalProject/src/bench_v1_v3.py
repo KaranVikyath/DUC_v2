@@ -223,6 +223,14 @@ def mat_problem(name, seed=17):
         "HARUS": ("HARUS.mat", "fea", "lab", [512, 256], 6, 20, 7e-3, 120, 1, 1),
         "DSDD": ("Dataset_for_Sensorless_Drive_diagnosis.mat", "fea", "lab",
                  [40], 11, 4, 7e-3, 44, 1, 1),
+        # VED (Vehicle Energy Dataset, Apache-2.0): 9 OBD-II engine signals from
+        # the 10 vehicles with the most complete records; label = vehicle.
+        # With 9 features the encoder must WIDEN: rank K*d = 20 >= K clusters and
+        # < F_enc = 32, so the CFS projection is neither degenerate nor identity
+        # (DSDD's code config, rank 44 vs F_enc 40, is identity). VED is 85k rows
+        # (completion only); VED10k, 1,000 rows per vehicle, is the clustering set.
+        "VED": ("VED.mat", "fea", "lab", [32], 10, 2, 7e-3, 20, 1, 1),
+        "VED10k": ("VED10k.mat", "fea", "lab", [32], 10, 2, 7e-3, 20, 1, 1),
     }[name]
     fn, fk, lk, enc, K, d, lr, rank, a1, a2 = spec
     mat = sio.loadmat(os.path.join(_DATA, fn))
@@ -680,7 +688,16 @@ def run_baseline_one(name, P, missing_pct, seed=17, pattern="mcar",
     if torch.cuda.is_available():
         torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
         base_alloc = torch.cuda.memory_allocated()
-    X_hat, took = run_baseline(name, missing, rank=P["rank"])
+    labels, info = None, {}
+    if name.startswith("sota_"):
+        # State-of-the-art methods (sota/): same masks, scaling and scoring as
+        # every other row. Some also cluster; their own labels are scored too.
+        import sota
+        X_hat, labels, took, info = sota.run(
+            name[len("sota_"):], missing, seed=seed, K=P["K"],
+            profile=P.get("sota_profile", "full"))
+    else:
+        X_hat, took = run_baseline(name, missing, rank=P["rank"])
     if X_hat is None:
         if verbose:
             print(f"  {P['name']:<9} {name:<12} miss={missing_pct*100:>3.0f}%  skipped: {took}")
@@ -710,6 +727,9 @@ def run_baseline_one(name, P, missing_pct, seed=17, pattern="mcar",
         except Exception as e:
             print(f"    [baseline clustering failed: {type(e).__name__}]")
         clu_s = time.perf_counter() - t0
+    cluster_acc_own = float("nan")
+    if labels is not None and P.get("true_labels") is not None:
+        cluster_acc_own = (1 - err_rate(P["true_labels"], np.asarray(labels).ravel())) * 100
 
     res = dict(dataset=P["name"], version="baseline", tag=name, baseline=name,
                missing_pct=missing_pct, seed=seed, pattern=pattern,
@@ -720,7 +740,9 @@ def run_baseline_one(name, P, missing_pct, seed=17, pattern="mcar",
                completion_unobs_raw=compl_raw, completion_unobs=compl_raw,
                completion_acc=float("nan"), cluster_acc=cluster_acc,
                cluster_build_ms=clu_s * 1000, normalized=bool(P.get("normalize")),
-               B=Bn, rank=P["rank"])
+               cluster_acc_own=cluster_acc_own,
+               sota_profile=P.get("sota_profile") if name.startswith("sota_") else None,
+               method_info=info, B=Bn, rank=P["rank"])
     if verbose:
         print(f"  {P['name']:<9} {name:<12} miss={missing_pct*100:>3.0f}%  "
               f"{took:>7.1f}s  peak={peak_mb:>7.1f}MB  NMAE={nmae:>8.4f}  "
@@ -1262,6 +1284,7 @@ def single_run(args):
         P["max_iters"] = args.max_iters
     if args.stop_factor:
         P["stop_factor"] = args.stop_factor
+    P["sota_profile"] = args.sota_profile
 
     gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
 
@@ -1346,19 +1369,24 @@ def main():
                     help="keep saved rows and skip configurations already run")
     ap.add_argument("--single", action="store_true", help="run one config (CHTC)")
     ap.add_argument("--aggregate", metavar="GLOB", help="merge shards into a table")
+    from sota import METHODS as _SOTA
     ap.add_argument("--version", default="v3",
                     choices=["v1", "v3", "allbase", "mean", "svd_impute",
-                             "soft_impute", "knn", "mice"],
+                             "soft_impute", "knn", "mice"]
+                            + [f"sota_{m}" for m in _SOTA],
                     help="v1/v3, one classical baseline, or allbase = every "
                          "applicable baseline in one job (one shard each)")
     ap.add_argument("--dataset", default="synthetic",
                     choices=["synthetic", "ORL", "COIL20", "COIL100", "EYaleB",
-                             "Flowers", "OxfordPet", "HARUS", "DSDD"])
+                             "Flowers", "OxfordPet", "HARUS", "DSDD", "VED", "VED10k"])
     ap.add_argument("--B", type=int, default=None, help="sample count (synthetic)")
     ap.add_argument("--F", type=int, default=50, help="feature count (synthetic)")
     ap.add_argument("--missing", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=17)
     ap.add_argument("--rank-pseudo", type=int, default=RANK_PSEUDO, dest="rank_pseudo")
+    ap.add_argument("--sota-profile", default="full", choices=["full", "reduced"],
+                    dest="sota_profile",
+                    help="budget for sota_* methods, fixed in advance in each adapter")
     ap.add_argument("--pseudo", default="blockdiag", choices=["blockdiag", "cola"],
                     help="v3 pseudo-completion: linear W_f = B_f A_f, or CoLA "
                          "B_f sigma(A_f x_f)")
