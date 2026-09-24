@@ -1,0 +1,5 @@
+# The image needs only src/sota/fetch.py from this directory (code ships in
+# project.tar.gz). Without this, `docker build .` uploads ~4 GB of context,
+# mostly third_party/ (raw VED download, cloned baseline repos) and data/.
+*
+!src/sota/fetch.py
