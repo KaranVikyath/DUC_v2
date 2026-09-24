@@ -408,7 +408,14 @@ class EfficientCFSModule(nn.Module):
         if use_cpu and G.is_cuda:
             w, U = torch.linalg.eigh(G.cpu())
             return w.to(G.device), U.to(G.device)
-        return torch.linalg.eigh(G)
+        try:
+            return torch.linalg.eigh(G)
+        except torch.linalg.LinAlgError:
+            # cuSOLVER's syevd can fail to converge on an ill-conditioned Gram
+            # where LAPACK does not: COIL100 at 90% missing (3840x3840) did on
+            # an L40S. Redo that one step on the host in float64.
+            w, U = torch.linalg.eigh(G.detach().double().cpu())
+            return w.to(G.device, G.dtype), U.to(G.device, G.dtype)
 
     def forward(self, Z):
         # Z: (B, F_enc)
