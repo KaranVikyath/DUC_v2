@@ -199,12 +199,24 @@ class CoLAPseudoCompletion(nn.Module):
     so each feature's completion is a nonlinear function of its r_p pooled
     statistics. Same parameters as the linear version plus F*r_p for c.
 
+    The bottleneck runs on each feature STANDARDIZED by its observed mean/std
+    and maps back afterwards (x_hat = sd_f * out + mu_f). CoLA's layers sit
+    behind normalization in an LLM; fed raw data (pixels 0-255, synthetic
+    |x| ~ 100) A x lands at |z| ~ 100-300, every unit is in sigma's flat
+    negative tail by iteration 10, and the layer never recovers (NMAE 2.2 on
+    synthetic vs 0.21 linear). A linear map cannot die that way, so the
+    linear version needs no such step. Missing entries standardize to 0 —
+    the feature mean.
+
     At r_p = 1 sigma acts on a single scalar per feature and the map stays
     rank-1 — compare the two at r_p > 1. Portable autograd path only (no fused
     kernel), so time it separately from the linear version.
     """
 
-    ACTS = {"silu": nn.functional.silu, "relu": torch.relu, "gelu": nn.functional.gelu}
+    # "identity" keeps the standardization and the near-zero B_mat init but
+    # drops sigma — it separates what sigma does from what those two do.
+    ACTS = {"silu": nn.functional.silu, "relu": torch.relu, "gelu": nn.functional.gelu,
+            "tanh": torch.tanh, "identity": lambda z: z}
 
     def __init__(self, input_shape, flat_layer_size, rank_pseudo, act="silu"):
         super().__init__()
@@ -224,18 +236,29 @@ class CoLAPseudoCompletion(nn.Module):
         self.bias = nn.Parameter(torch.zeros(F, B))
         self.prelu_weight = nn.Parameter(torch.full((F, 1), 0.25))
 
-        # Kaiming on each factor: A x has variance 2 E[x^2], sigma roughly halves
-        # it, and B_mat's 2/r brings it back — the same output variance as the
-        # linear version's Var(W_ij) = 2/B.
+        # A: Kaiming in standardized units, so A x_std has variance ~2.
+        # B_mat: 1% of Kaiming, so the layer starts as mean imputation (out ~ mu)
+        # and learns the correction — LoRA's zero-init up-projection, kept just
+        # off zero so A gets a gradient from step one. Full Kaiming on B_mat
+        # starts from data-scale noise instead and ended worse: ORL NMAE 0.554
+        # vs 0.442 at 30% missing, 0.573 vs 0.471 at 70% (linear 0.437/0.470).
         nn.init.normal_(self.A, std=(2.0 / B) ** 0.5)
-        nn.init.normal_(self.B_mat, std=(2.0 / r) ** 0.5)
+        nn.init.normal_(self.B_mat, std=0.01 * (2.0 / r) ** 0.5)
 
     def forward(self, x):
-        x = x.reshape(self.batch_size, -1).float()
-        x = torch.nan_to_num(x, nan=0.0)
-        x_t = x.t().unsqueeze(2)                                   # (F, B, 1)
-        h = self.act(torch.bmm(self.A, x_t) + self.c)              # (F, r, 1)
-        out = torch.bmm(self.B_mat, h).squeeze(2) + self.bias      # (F, B)
+        x = x.reshape(self.batch_size, -1).float()               # (B, F)
+        with torch.no_grad():                                     # data, not params
+            obs = ~torch.isnan(x)
+            n = obs.sum(0).clamp_min(1)
+            x0 = torch.nan_to_num(x, nan=0.0)
+            mu = x0.sum(0) / n
+            sd = (((x0 - mu) * obs) ** 2).sum(0).div(n).sqrt()
+            sd = torch.where(sd < 1e-6, torch.ones_like(sd), sd)  # constant features
+            x_std = (x0 - mu) / sd * obs                          # missing -> 0 = mean
+        x_t = x_std.t().unsqueeze(2)                              # (F, B, 1)
+        h = self.act(torch.bmm(self.A, x_t) + self.c)             # (F, r, 1)
+        out = torch.bmm(self.B_mat, h).squeeze(2)                 # (F, B), standardized
+        out = out * sd.unsqueeze(1) + mu.unsqueeze(1) + self.bias
         out = torch.clamp(out, min=0) + self.prelu_weight * torch.clamp(out, max=0)
         return out.t().reshape(self.input_shape)
 
@@ -351,8 +374,9 @@ class EfficientCFSModule(nn.Module):
                         backward recomputes the SVD, so two per iteration) and it
                         allocates the dense (B, B) Coef internally.
 
-    `eigh_device="cpu"` runs the (F_enc, F_enc) eigendecomposition on the host:
-    cuSOLVER is setup-bound at these sizes and the CPU is ~4.5x faster for a 40x40.
+    `eigh_device="auto"` runs the eigendecomposition on the host up to n=512, where
+    cuSOLVER is setup-bound (the CPU is ~4.5x faster for a 40x40), and on the GPU
+    above it (7.5x faster at COIL100's 3840x3840 against a 4-core CHTC job).
 
     V_rank (B, rank) is never formed during training — only `Z @ U_r` (B, rank) and
     the eigenvalues are kept, and V is reconstructed on demand for clustering.
@@ -490,7 +514,10 @@ class DeLUCAV3(nn.Module):
         pseudo_mode : "blockdiag" (default, W_f = B_f A_f), "full" (one rank-r map over
                       the whole matrix) or "cola" (B_f sigma(A_f x_f), sigma = cola_act).
         cfs_backend : "gram" (default, exact + fastest), "lowrank", or "cusolver".
-        eigh_device : "cpu" (default) or "gpu" for the tiny (F_enc, F_enc) eigh.
+        eigh_device : "auto" (default: CPU up to n=512, GPU above), "cpu" or "gpu".
+                      The Gram is (F_enc, F_enc) or (B, B), whichever is smaller —
+                      40x40 on synthetic but 3840x3840 on COIL100, where the old
+                      "cpu" default cost 3.3 s/iter on 4 cores vs 0.45 s on the GPU.
         grad_clip   : max grad norm, or None (default) for no clipping.
         skip_nan_check     : use EncoderNoNaN (safe — Xc cannot contain NaN).
         track_autoenc_loss : compute 0.5*||Z-PZ||_F. It is logging-only in CFS mode,
@@ -508,7 +535,7 @@ class DeLUCAV3(nn.Module):
                  kernel_size, output_padding, lr, K, rank, reg_const1=1.0, reg_const2=1.0,
                  batch_size=200, model_path=None, logs_path="",
                  cluster_model="CFS", device="CPU",
-                 rank_pseudo=None, cfs_backend="gram", eigh_device="cpu",
+                 rank_pseudo=None, cfs_backend="gram", eigh_device="auto",
                  grad_clip=None, skip_nan_check=True, track_autoenc_loss=False,
                  defer_output=True, log_every=1,
                  loss_fn="frobenius", use_fused_loss=True,
