@@ -33,6 +33,12 @@ request_gpus = 1
 # gpu_model in the DAG VARS. Submitting this file by hand needs -a gpu_model=...
 require_gpus = (DeviceName == "$(gpu_model)") && (GlobalMemoryMb >= $(gpu_mem_min:40000)) && (Capability >= $(gpu_cap_min:7.5)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
+# Lets the job run on backfill GPUs in researcher-owned machines, where it
+# can be evicted and restarted. Every DUC job writes its shard only at the
+# end, so a restart just reruns it. The free H200/L40S cards are all
+# owner-reserved (Start = false); the backfill slots on those machines were
+# all running jobs that set this flag, and ours, without it, never got one.
++is_resumable = true
 # v1 is ~1.3 s/iter on ORL and can run ~900 iterations, so leave headroom.
 +GPUJobLength = "medium"
 

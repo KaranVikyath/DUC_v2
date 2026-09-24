@@ -38,6 +38,12 @@ request_gpus = 1
 # gpu_model in the DAG VARS. Submitting this file by hand needs -a gpu_model=...
 require_gpus = (DeviceName == "$(gpu_model)") && (GlobalMemoryMb >= $(gpu_mem_min:75000)) && (Capability >= $(gpu_cap_min:8.0)) && (Capability <= $(gpu_cap_max:12.0))
 +WantGPULab   = true
+# Lets the job run on backfill GPUs in researcher-owned machines, where it
+# can be evicted and restarted. Every DUC job writes its shard only at the
+# end, so a restart just reruns it. The free H200/L40S cards are all
+# owner-reserved (Start = false); the backfill slots on those machines were
+# all running jobs that set this flag, and ours, without it, never got one.
++is_resumable = true
 # "short" = up to 12 h, and the longest job here is ~75 min (COIL20 v1: 39 min
 # on an H200, EYaleB v1: ~73 min). GPU Lab caps concurrent jobs PER USER PER
 # LENGTH class, and the "long" cap (GPULAB_LONG.<user>:1) ran all 18 v1 jobs
